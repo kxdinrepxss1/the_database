@@ -1,6 +1,6 @@
 # The Database
 
-The Database is a mobile-friendly sports-card collection app. It supports:
+The Database is a mobile-friendly sports-card collection app that is awesome. It supports:
 
 - collector accounts through Supabase
 - private cloud-synced collections
