@@ -2,3 +2,6 @@ name = "the-database"
 main = "worker/index.js"
 compatibility_date = "2026-07-26"
 
+[vars]
+SUPABASE_URL = "https://xedhodfxzsbjfcivbjlg.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_4YwalQLdluD3K0M5C8SIDQ_QoPM-7HE"
