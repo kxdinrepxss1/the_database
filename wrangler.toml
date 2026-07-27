@@ -1,6 +1,7 @@
 name = "the-database"
 main = "worker/index.js"
 compatibility_date = "2026-07-26"
+keep_vars = true
 
 [vars]
 SUPABASE_URL = "https://xedhodfxzsbjfcivbjlg.supabase.co"
