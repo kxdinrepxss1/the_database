@@ -48,8 +48,11 @@ publishable key is designed for browser clients, and row-level security is what
 actually protects each collection. `OPENAI_API_KEY` is a real secret and must
 never go in `wrangler.toml`.
 
-Without `OPENAI_API_KEY` the app still works — `/api/scan-card` returns 503 and
-the scan screen offers manual entry instead.
+Without `OPENAI_API_KEY` the app still works, and the Scan page reshapes itself
+into a plain photo-capture flow: photograph the front and back, or choose
+photos already on the device, then fill in the details by hand. Nothing in the
+interface promises recognition the deployment cannot perform. Add the key later
+and the page turns back into the AI scanner on its own — no code change needed.
 
 ## Run locally
 
