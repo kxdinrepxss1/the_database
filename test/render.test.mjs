@@ -94,5 +94,11 @@ for (const [label, html] of [["without AI", withoutAi], ["with AI", withAi]]) {
   check(`manualScan always rendered ${label}`, script.includes('id="manualScan"'), true);
 }
 
+// Accent colour lives in one variable; nothing should hardcode the old lime.
+check("accent variable defined once", (withoutAi.match(/--accent:#7dd3fc/g) || []).length, 1);
+check("no stale lime variable", /--lime/.test(withoutAi), false);
+check("no stale lime hex", /caff3d/i.test(withoutAi), false);
+check("accent used via the variable", withoutAi.includes("var(--accent)"), true);
+
 console.log(failed ? "\nFAILED" : "\nAll checks passed");
 process.exit(failed ? 1 : 0);
