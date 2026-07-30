@@ -111,7 +111,20 @@ exercises the scan endpoint's daily limit against a mocked Supabase and OpenAI,
 parses a generated export archive back the way `unzip` does, and checks that
 error reporting stays bounded. No network access or API keys needed.
 
-The same suite runs on every pull request and every push to `main` via
+There is also a browser suite, kept separate because it needs Chromium:
+
+```bash
+npm install
+npm run test:browser
+```
+
+It serves the worker over HTTP and drives the signed-out path in a real
+browser — adding a card, pricing it, hitting the duplicate warning, and
+upgrading a collection saved under the older price format — failing on any
+uncaught error. The other suites only parse the client script, so they cannot
+catch a reference to a variable that no longer exists; this one can.
+
+Both run on every pull request and every push to `main` via
 `.github/workflows/test.yml`.
 
 The policy tests under `supabase/tests/` are optional and need a scratch
