@@ -21,13 +21,21 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], failWrites: false, writeAttempts: 0 };
+const backend = { cards: [], snapshots: [], failWrites: false, writeAttempts: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
   if (url.pathname.startsWith("/storage/v1/")) return [200, {}];
+  if (url.pathname === "/rest/v1/collection_snapshots") {
+    if (req.method === "GET") return [200, backend.snapshots];
+    if (req.method === "POST") {
+      const rows = JSON.parse(body);
+      backend.snapshots = backend.snapshots.concat(Array.isArray(rows) ? rows : [rows]);
+      return [201, null];
+    }
+  }
   if (url.pathname === "/rest/v1/cards") {
     if (req.method === "GET") return [200, backend.cards];
     if (req.method === "POST") {
@@ -314,6 +322,72 @@ const queued = (page) => page.evaluate(() =>
   check("delete replaces the pending save", await queued(page), 1);
   check("the queued entry is the delete", await page.evaluate(() =>
     JSON.parse(localStorage.getItem("the-database-outbox"))[0].kind), "delete");
+  await context.close();
+}
+
+// --- Value history follows the collector between devices --------------------
+
+// A device with existing local history carries it up on first sign-in.
+{
+  backend.cards = []; backend.snapshots = []; backend.failWrites = false;
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+    localStorage.setItem("the-database-history", JSON.stringify([
+      { time: Date.parse("2026-07-01T00:00:00Z"), total: 100 },
+      { time: Date.parse("2026-07-15T00:00:00Z"), total: 250 },
+    ]));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e.message)));
+  await page.goto(origin + "/");
+  await page.waitForTimeout(800);
+
+  check("existing local history is uploaded", backend.snapshots.length, 2);
+  check("uploaded history keeps its values",
+    backend.snapshots.map((s) => Number(s.total)), [100, 250]);
+  check("uploaded history keeps its timestamps",
+    backend.snapshots.map((s) => s.created_at.slice(0, 10)), ["2026-07-01", "2026-07-15"]);
+  check("no errors carrying history up", errors, []);
+  await context.close();
+}
+
+// A fresh device adopts the history already on the server.
+{
+  backend.cards = [];
+  backend.snapshots = [
+    { total: 500, created_at: "2026-07-02T00:00:00Z" },
+    { total: 900, created_at: "2026-07-20T00:00:00Z" },
+  ];
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e.message)));
+  await page.goto(origin + "/");
+  await page.waitForTimeout(800);
+
+  check("server history is adopted locally", await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("the-database-history")).map((h) => h.total)), [500, 900]);
+  check("nothing is re-uploaded when the server already has history",
+    backend.snapshots.length, 2);
+  // Growth is measured against the earliest point, so it reflects the whole
+  // tracked period rather than restarting on this device. With no cards loaded
+  // the collection is worth nothing, so it reads as a fall from that baseline.
+  check("growth is measured from the earliest server point",
+    (await page.locator("#growthValue").textContent()).trim(), "-$500.00");
+  check("the chart is drawn from the server history", await page.evaluate(() =>
+    document.getElementById("growthLine").getAttribute("d").split("L").length), 2);
+  check("no errors adopting history", errors, []);
   await context.close();
 }
 

@@ -33,8 +33,9 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 The SQL enables row-level security so signed-in users can only access their own
 cards and photo folder. It is safe to re-run at any time, and you should re-run
 it after pulling changes — the card scanner refuses to run until the
-`scan_events` table it meters against exists, and error reporting is silently
-skipped until `error_events` does.
+`scan_events` table it meters against exists, error reporting is silently
+skipped until `error_events` does, and the growth chart stays device-local
+until `collection_snapshots` does.
 
 ## How saving works
 
@@ -51,6 +52,14 @@ to one write and a delete cancels an unsent save.
 The header carries the state: nothing while everything is synced, otherwise a
 count. The account page spells out what is waiting and why, since phones have no
 tooltips.
+
+Collection value over time is recorded to `collection_snapshots`, so the growth
+chart follows a collector between devices. Signing in on a device that already
+has a chart carries that history up rather than discarding it. Snapshots are
+deliberately best-effort and are not queued through the outbox: one is a single
+point on a trend line, whereas a card is the collector's actual data. Writes are
+debounced, so a burst of price edits leaves one point rather than one per
+keystroke.
 
 ## Seeing what is failing
 
