@@ -15,7 +15,38 @@ import { createServer } from "node:http";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "" };
+// SUPABASE_URL is filled in once the server has a port: the mock Supabase is
+// served from the same origin as the app, so the client talks to it normally.
+const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
+
+// Minimal stand-in for the Supabase endpoints the client uses, plus a switch
+// for making writes fail so the outbox can be observed holding on to them.
+const backend = { cards: [], failWrites: false, writeAttempts: 0 };
+const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
+
+async function supabase(req, url, body) {
+  if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
+  if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
+  if (url.pathname.startsWith("/storage/v1/")) return [200, {}];
+  if (url.pathname === "/rest/v1/cards") {
+    if (req.method === "GET") return [200, backend.cards];
+    if (req.method === "POST") {
+      backend.writeAttempts++;
+      if (backend.failWrites) return [500, { message: "backend unavailable" }];
+      const row = JSON.parse(body);
+      backend.cards = backend.cards.filter((c) => c.id !== row.id).concat(row);
+      return [201, null];
+    }
+    if (req.method === "DELETE") {
+      backend.writeAttempts++;
+      if (backend.failWrites) return [500, { message: "backend unavailable" }];
+      const id = decodeURIComponent((url.search.match(/id=eq\.([^&]+)/) || [])[1] || "");
+      backend.cards = backend.cards.filter((c) => c.id !== id);
+      return [204, null];
+    }
+  }
+  return null;
+}
 
 // Some environments ship a Chromium that predates the installed Playwright.
 // Prefer whatever is already on disk over failing or downloading another copy.
@@ -29,12 +60,29 @@ function preinstalledChromium() {
 }
 
 const server = createServer(async (req, res) => {
-  const response = await worker.fetch(new Request("http://localhost" + req.url), env);
+  const url = new URL(req.url, "http://127.0.0.1");
+  let body = "";
+  for await (const chunk of req) body += chunk;
+
+  if (url.pathname === "/__test/fail") {
+    backend.failWrites = url.searchParams.get("on") === "1";
+    res.writeHead(200).end("ok");
+    return;
+  }
+  const mocked = await supabase(req, url, body);
+  if (mocked) {
+    const [status, payload] = mocked;
+    res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*" });
+    res.end(payload === null ? "" : JSON.stringify(payload));
+    return;
+  }
+  const response = await worker.fetch(new Request("http://127.0.0.1" + req.url), env);
   res.writeHead(response.status, Object.fromEntries(response.headers));
   res.end(Buffer.from(await response.arrayBuffer()));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${server.address().port}`;
+env.SUPABASE_URL = origin;
 
 let failed = false;
 const check = (name, got, want) => {
@@ -164,6 +212,108 @@ for (const route of ["/", "/collection", "/pricing", "/scan", "/account", "/rese
   check("migrated price is displayed",
     (await page.locator(".price-tag strong").first().textContent()).trim(), "$77.25");
   check("no errors during the upgrade", errors, []);
+  await context.close();
+}
+
+// --- The outbox: signed in, with a backend that can be made to fail ---------
+async function signedIn(route) {
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e.message)));
+  await page.goto(origin + route);
+  await page.waitForTimeout(600);
+  return { context, page, errors };
+}
+
+const addCard = async (page, player) => {
+  await page.click("#addCard");
+  await page.fill('[name="player"]', player);
+  await page.fill('[name="year"]', "2024");
+  await page.fill('[name="set"]', "Topps Chrome");
+  await page.click(".submit-card");
+  await page.waitForTimeout(500);
+};
+const queued = (page) => page.evaluate(() =>
+  JSON.parse(localStorage.getItem("the-database-outbox") || "[]").length);
+
+// A save reaches the backend and leaves the queue empty.
+{
+  backend.cards = []; backend.failWrites = false;
+  const { context, page, errors } = await signedIn("/collection");
+  await addCard(page, "Aaron Judge");
+  check("card reached the backend", backend.cards.length, 1);
+  check("queue drains after a successful save", await queued(page), 0);
+  check("no errors on the happy path", errors, []);
+  await context.close();
+}
+
+// A failing backend must not lose the card.
+{
+  backend.cards = []; backend.failWrites = true;
+  const { context, page } = await signedIn("/collection");
+  await addCard(page, "Chris Sale");
+
+  check("nothing reached the backend", backend.cards.length, 0);
+  check("the save is held in the queue", await queued(page), 1);
+  check("the card is still visible to the user", await page.locator(".catalog-card").count(), 1);
+  check("the indicator reports unsent work",
+    (await page.locator("#syncStatus").textContent()).includes("unsaved"), true);
+
+  // The queue must survive a reload — this is the whole point of it.
+  await page.reload();
+  await page.waitForTimeout(600);
+  check("queue survives a reload", await queued(page), 1);
+
+  // Recover the backend; the pending save should go through by itself.
+  backend.failWrites = false;
+  await page.evaluate(() => fetch("/__test/fail?on=0"));
+  await page.reload();
+  await page.waitForTimeout(1200);
+  check("recovered backend receives the held save", backend.cards.length, 1);
+  check("queue empties once it lands", await queued(page), 0);
+  await context.close();
+}
+
+// Repeated edits to one card collapse instead of piling up.
+{
+  backend.cards = []; backend.failWrites = true;
+  const { context, page } = await signedIn("/collection");
+  await addCard(page, "Juan Soto");
+  for (const price of ["10", "20", "30"]) {
+    await page.click(".catalog-card");
+    await page.waitForTimeout(200);
+    await page.click(".edit-card");
+    await page.fill('[name="price"]', price);
+    await page.click(".submit-card");
+    await page.waitForTimeout(300);
+  }
+  check("one entry per card, not one per edit", await queued(page), 1);
+  check("the queued entry holds the latest value", await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("the-database-outbox"))[0].card.currentValue), 30);
+  await context.close();
+}
+
+// Deleting a card that never synced cancels its pending save.
+{
+  backend.cards = []; backend.failWrites = true;
+  const { context, page } = await signedIn("/collection");
+  await addCard(page, "Gerrit Cole");
+  check("save is pending", await queued(page), 1);
+  await page.click(".catalog-card");
+  await page.waitForTimeout(200);
+  await page.click(".remove-card");
+  await page.click(".confirm-remove");
+  await page.waitForTimeout(400);
+  check("delete replaces the pending save", await queued(page), 1);
+  check("the queued entry is the delete", await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("the-database-outbox"))[0].kind), "delete");
   await context.close();
 }
 
