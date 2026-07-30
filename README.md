@@ -36,6 +36,22 @@ it after pulling changes — the card scanner refuses to run until the
 `scan_events` table it meters against exists, and error reporting is silently
 skipped until `error_events` does.
 
+## How saving works
+
+When signed in, every change is written to a local outbox before it is sent.
+Saving a card, editing one, changing a price and removing a card all land there
+first, so a save survives a refresh, a dead connection or a failed request.
+
+The queue drains in order. A failure stops it rather than reordering, since a
+later edit may depend on an earlier one, and it retries with a widening delay,
+when the connection returns, and when the tab is focused again. A newer change
+to a card replaces whatever was still pending for it, so repeated edits collapse
+to one write and a delete cancels an unsent save.
+
+The header carries the state: nothing while everything is synced, otherwise a
+count. The account page spells out what is waiting and why, since phones have no
+tooltips.
+
 ## Seeing what is failing
 
 Signed-in clients record their own failures to `error_events`. Reports contain
