@@ -1,11 +1,12 @@
 # The Database
 
-The Database is a mobile-friendly sports-card collection app that is awesome. It supports:
+The Database is a mobile-friendly sports-card collection app. It supports:
 
 - collector accounts through Supabase
 - private cloud-synced collections
 - front and back card photos
 - manual card entry, editing, pricing, and removal
+- AI-assisted card recognition from a photo, reviewed before anything is saved
 - search and filtering
 - collection value, cost, profit, and growth tracking
 - install-to-home-screen support
@@ -14,6 +15,8 @@ The Database is a mobile-friendly sports-card collection app that is awesome. It
 
 - `worker/index.js` — the complete website and application logic
 - `supabase/setup.sql` — database, storage, and privacy policies
+- `supabase/tests/` — optional checks for the row-level-security policies
+- `test/` — checks that the worker renders and that scan limits hold
 - `wrangler.toml` — configuration for independent Cloudflare Workers hosting
 - `.dev.vars.example` — local environment-variable template
 
@@ -26,12 +29,31 @@ The Database is a mobile-friendly sports-card collection app that is awesome. It
    URLs to the address where you deploy the app.
 
 The SQL enables row-level security so signed-in users can only access their own
-cards and photo folder.
+cards and photo folder. It is safe to re-run at any time, and you should re-run
+it after pulling changes — the card scanner refuses to run until the
+`scan_events` table it meters against exists.
+
+## Configuration
+
+| Name | Where it goes | Required | Purpose |
+| --- | --- | --- | --- |
+| `SUPABASE_URL` | `wrangler.toml` `[vars]` | yes | Supabase project address |
+| `SUPABASE_PUBLISHABLE_KEY` | `wrangler.toml` `[vars]` | yes | Browser-side Supabase key |
+| `OPENAI_API_KEY` | Wrangler **secret** | no | Enables the card scanner |
+| `OPENAI_VISION_MODEL` | `wrangler.toml` `[vars]` | no | Defaults to `gpt-4.1-mini` |
+| `SCAN_DAILY_LIMIT` | `wrangler.toml` `[vars]` | no | Scans per account per day, default 25 |
+
+The Supabase URL and publishable key live in `wrangler.toml` on purpose: the
+publishable key is designed for browser clients, and row-level security is what
+actually protects each collection. `OPENAI_API_KEY` is a real secret and must
+never go in `wrangler.toml`.
+
+Without `OPENAI_API_KEY` the app still works — `/api/scan-card` returns 503 and
+the scan screen offers manual entry instead.
 
 ## Run locally
 
-Copy `.dev.vars.example` to `.dev.vars`, then enter your Supabase project URL
-and publishable key.
+Copy `.dev.vars.example` to `.dev.vars`, then fill in your values.
 
 ```bash
 npx wrangler dev
@@ -39,14 +61,35 @@ npx wrangler dev
 
 Open the local address Wrangler prints.
 
+## Tests
+
+```bash
+npm test
+```
+
+This renders every route, syntax-checks the client script the worker inlines,
+and exercises the scan endpoint's daily limit against a mocked Supabase and
+OpenAI. No network access or API keys needed.
+
+The policy tests under `supabase/tests/` are optional and need a scratch
+PostgreSQL database — never point them at your real project:
+
+```bash
+psql "$SCRATCH_DB" -f supabase/tests/stub-supabase.sql
+psql "$SCRATCH_DB" -f supabase/setup.sql
+psql "$SCRATCH_DB" -f supabase/tests/policies.test.sql
+```
+
+They confirm that collectors cannot read each other's cards, cannot write rows
+owned by someone else, and cannot clear their own scan counter.
+
 ## Deploy independently
 
 This source is already compatible with Cloudflare Workers:
 
 ```bash
 npx wrangler login
-npx wrangler secret put SUPABASE_URL
-npx wrangler secret put SUPABASE_PUBLISHABLE_KEY
+npx wrangler secret put OPENAI_API_KEY   # only if you want the scanner
 npx wrangler deploy
 ```
 
@@ -58,5 +101,7 @@ connected later from the Cloudflare dashboard.
 - Do not put a Supabase service-role key in this app.
 - The Supabase publishable key is intended for browser clients; row-level
   security is what protects each collection.
+- `OPENAI_API_KEY` is only ever used by the Worker, never sent to the browser.
+- Card scans are capped per account per day so one signed-in user cannot run up
+  your OpenAI bill. Raise or lower it with `SCAN_DAILY_LIMIT`.
 - `.dev.vars` is excluded from Git by `.gitignore`.
-

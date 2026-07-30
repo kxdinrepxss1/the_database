@@ -26,6 +26,21 @@ create table if not exists public.cards (
   updated_at timestamptz not null default now()
 );
 
+create index if not exists cards_user_created_idx on public.cards (user_id, created_at desc);
+
+create or replace function public.touch_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists cards_touch_updated_at on public.cards;
+create trigger cards_touch_updated_at
+before update on public.cards
+for each row execute function public.touch_updated_at();
+
 alter table public.cards enable row level security;
 
 drop policy if exists "Collectors can read their cards" on public.cards;
@@ -48,6 +63,30 @@ drop policy if exists "Collectors can delete their cards" on public.cards;
 create policy "Collectors can delete their cards"
 on public.cards for delete
 using (auth.uid() = user_id);
+
+-- Scan usage log. Backs the per-user daily cap enforced by /api/scan-card so a
+-- single account cannot run up the OpenAI bill.
+create table if not exists public.scan_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists scan_events_user_created_idx on public.scan_events (user_id, created_at desc);
+
+alter table public.scan_events enable row level security;
+
+-- Collectors may read and append their own scan log. There is deliberately no
+-- update or delete policy: without one, nobody can reset their own counter.
+drop policy if exists "Collectors can read their scan history" on public.scan_events;
+create policy "Collectors can read their scan history"
+on public.scan_events for select
+using (auth.uid() = user_id);
+
+drop policy if exists "Collectors can record their scans" on public.scan_events;
+create policy "Collectors can record their scans"
+on public.scan_events for insert
+with check (auth.uid() = user_id);
 
 insert into storage.buckets (id, name, public)
 values ('card-photos', 'card-photos', false)
