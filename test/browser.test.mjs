@@ -21,7 +21,7 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], failWrites: false, writeAttempts: 0 };
+const backend = { cards: [], snapshots: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
@@ -29,6 +29,8 @@ async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
   if (url.pathname.startsWith("/storage/v1/")) return [200, {}];
   if (url.pathname === "/rest/v1/collection_snapshots") {
+    // What Supabase actually returns when setup.sql has not been re-run.
+    if (backend.noSnapshotTable) return [404, { message: "Could not find the table 'public.collection_snapshots' in the schema cache" }];
     if (req.method === "GET") return [200, backend.snapshots];
     if (req.method === "POST") {
       const rows = JSON.parse(body);
@@ -488,6 +490,33 @@ const queued = (page) => page.evaluate(() =>
     await page.locator("#containerFilter option").allTextContents(),
     ["All locations", "Binder 7 (1)", "Box A (1)", "Shoebox (1)"]);
   check("no errors during the location upgrade", errors, []);
+  await context.close();
+}
+
+// Deploying without re-running setup.sql must not look like a data problem.
+{
+  backend.cards = [{ id: "dddddddd-3333-4333-8333-333333333333", player: "Aaron Judge",
+    year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1 }];
+  backend.snapshots = []; backend.failWrites = false; backend.noSnapshotTable = true;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  await page.goto(origin + "/collection");
+  await page.waitForTimeout(800);
+
+  check("cards still load without the snapshots table",
+    await page.locator(".catalog-card").count(), 1);
+  await page.goto(origin + "/account");
+  await page.waitForTimeout(800);
+  check("no alarming sync message about the collection",
+    (await page.locator("#syncMessage").textContent()).trim(), "");
+  backend.noSnapshotTable = false;
   await context.close();
 }
 

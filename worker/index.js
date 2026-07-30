@@ -1,7 +1,7 @@
 // Single source of truth for the build. Names the service-worker cache and is
 // stamped onto error reports so a report can be tied to the code that produced
 // it. Bump it whenever the client script changes.
-const VERSION = "v17";
+const VERSION = "v18";
 
 const page = (route, env) => `<!doctype html>
 <html lang="en">
@@ -139,6 +139,7 @@ const page = (route, env) => `<!doctype html>
     }
     async function loadCloudHistory(){
       if(!session)return;
+      try{
       let rows=await sb('/rest/v1/collection_snapshots?select=total,created_at&order=created_at.asc&limit='+SNAPSHOT_LIMIT);
       // First sign-in on a device that already has a chart: carry it up rather
       // than throwing away history the collector can see today.
@@ -151,6 +152,7 @@ const page = (route, env) => `<!doctype html>
       valueHistory=rows.map(r=>({time:new Date(r.created_at).getTime(),total:Number(r.total)||0}));
       localStorage.setItem('the-database-history',JSON.stringify(valueHistory));
       updateTotals();
+      }catch(err){reportError('snapshot-read',err)}
     }
     // ---- Outbox ---------------------------------------------------------
     // Every cloud mutation is recorded here before it is attempted, so a save
