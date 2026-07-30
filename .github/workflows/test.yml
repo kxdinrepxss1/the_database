@@ -6,13 +6,25 @@ on:
   pull_request:
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      # No install step: the suite deliberately uses only Node built-ins, so
-      # there is nothing to fetch and nothing that can break from a bad lockfile.
+      # No install step: these suites deliberately use only Node built-ins, so
+      # nothing is fetched and no lockfile can break the run.
       - run: npm test
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
