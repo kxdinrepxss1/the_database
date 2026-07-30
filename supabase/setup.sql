@@ -88,6 +88,37 @@ create policy "Collectors can record their scans"
 on public.scan_events for insert
 with check (auth.uid() = user_id);
 
+-- Collection value over time. Kept server-side so the growth chart follows a
+-- collector between devices instead of restarting on each one.
+create table if not exists public.collection_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  total numeric(14,2) not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists collection_snapshots_user_created_idx
+  on public.collection_snapshots (user_id, created_at desc);
+
+alter table public.collection_snapshots enable row level security;
+
+drop policy if exists "Collectors can read their value history" on public.collection_snapshots;
+create policy "Collectors can read their value history"
+on public.collection_snapshots for select
+using (auth.uid() = user_id);
+
+drop policy if exists "Collectors can record their value history" on public.collection_snapshots;
+create policy "Collectors can record their value history"
+on public.collection_snapshots for insert
+with check (auth.uid() = user_id);
+
+-- Unlike scan_events, deleting is allowed here: this is the collector's own
+-- history with no metering role, so pruning it is theirs to do.
+drop policy if exists "Collectors can clear their value history" on public.collection_snapshots;
+create policy "Collectors can clear their value history"
+on public.collection_snapshots for delete
+using (auth.uid() = user_id);
+
 -- Client error log. Surfaces what is actually failing in real use instead of
 -- waiting for someone to mention it. Deliberately holds no card data: only the
 -- error, where it happened, the browser, and the build it came from.

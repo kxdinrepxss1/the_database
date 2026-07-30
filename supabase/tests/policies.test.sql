@@ -10,11 +10,13 @@ on conflict do nothing;
 
 grant usage on schema public, storage to authenticated;
 grant select, insert, update, delete
-  on public.cards, public.scan_events, public.error_events, storage.objects
+  on public.cards, public.scan_events, public.error_events,
+     public.collection_snapshots, storage.objects
   to authenticated;
 
 -- Start from a known state so this file can be run repeatedly.
 delete from public.scan_events  where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
+delete from public.collection_snapshots where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
 delete from public.error_events where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
 delete from public.cards        where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
 
@@ -92,6 +94,61 @@ begin
   raise notice 'error report as another user blocked: FAIL';
 exception when insufficient_privilege then
   raise notice 'error report as another user blocked: PASS';
+end $$;
+
+-- === collection_snapshots ===
+insert into public.collection_snapshots (user_id, total, created_at) values
+  ('11111111-1111-1111-1111-111111111111', 100.00, now() - interval '2 days'),
+  ('11111111-1111-1111-1111-111111111111', 250.50, now());
+
+select 'alice can record her value history: ' ||
+  case when count(*) = 2 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collection_snapshots where user_id = '11111111-1111-1111-1111-111111111111';
+
+-- Alice must not be able to write history onto Bob's account.
+do $$
+begin
+  insert into public.collection_snapshots (user_id, total)
+  values ('22222222-2222-2222-2222-222222222222', 999);
+  raise notice 'value history as another user blocked: FAIL';
+exception when insufficient_privilege then
+  raise notice 'value history as another user blocked: PASS';
+end $$;
+
+-- Unlike the scan counter, a collector may clear their own history.
+delete from public.collection_snapshots
+ where user_id = '11111111-1111-1111-1111-111111111111'
+   and total = 100.00;
+select 'alice can prune her own history: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collection_snapshots where user_id = '11111111-1111-1111-1111-111111111111';
+
+reset role;
+
+-- Bob's history, inserted with RLS bypassed, must stay invisible to Alice.
+insert into public.collection_snapshots (user_id, total)
+values ('22222222-2222-2222-2222-222222222222', 4242);
+
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+select 'alice cannot read bob value history: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collection_snapshots where user_id = '22222222-2222-2222-2222-222222222222';
+
+-- Nor delete it.
+do $$
+declare removed int;
+begin
+  delete from public.collection_snapshots
+   where user_id = '22222222-2222-2222-2222-222222222222';
+  get diagnostics removed = row_count;
+  if removed = 0 then
+    raise notice 'deleting another collector history blocked: PASS';
+  else
+    raise notice 'deleting another collector history blocked: FAIL (deleted %)', removed;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'deleting another collector history blocked: PASS';
 end $$;
 
 reset role;

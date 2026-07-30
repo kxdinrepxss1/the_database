@@ -1,7 +1,7 @@
 // Single source of truth for the build. Names the service-worker cache and is
 // stamped onto error reports so a report can be tied to the code that produced
 // it. Bump it whenever the client script changes.
-const VERSION = "v15";
+const VERSION = "v16";
 
 const page = (route, env) => `<!doctype html>
 <html lang="en">
@@ -65,7 +65,7 @@ const page = (route, env) => `<!doctype html>
     let lastPhotoSign=0;
     const $ = s => document.querySelector(s);
     const safe = value => String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    const money = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const money = n => (Number(n)<0?'-$':'$') + Math.abs(Number(n)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     const CARD_COLORS=['blue','red','gold','orange','purple','silver'];
     const initialsFor = name => String(name??'').trim().split(/\\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase()||'?';
     const colorFor = id => {let s=String(id),h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return CARD_COLORS[h%CARD_COLORS.length]};
@@ -106,6 +106,39 @@ const page = (route, env) => `<!doctype html>
     async function deleteStoredPhoto(path){if(!path)return;try{await fetch(SUPABASE_URL+'/storage/v1/object/card-photos/'+path,{method:'DELETE',headers:authHeaders()})}catch(e){}}
     async function deleteCloudCard(c){if(!session)return;await sb('/rest/v1/cards?id=eq.'+encodeURIComponent(c.id),{method:'DELETE'});await deleteStoredPhoto(c.frontImagePath);await deleteStoredPhoto(c.backImagePath)}
     async function refreshPhotoUrls(){if(!session)return;try{for(let c of customCards){if(c.frontImagePath)c.photo=await signedPhoto(c.frontImagePath);if(c.backImagePath)c.photoBack=await signedPhoto(c.backImagePath)}lastPhotoSign=Date.now();render()}catch(e){}}
+    // ---- Value history ---------------------------------------------------
+    // Kept server-side so the growth chart follows a collector between devices.
+    // Deliberately best-effort rather than queued through the outbox: a snapshot
+    // is one point on a trend line, so losing one costs a little smoothness,
+    // while a card is the collector's actual data and must never be dropped.
+    const SNAPSHOT_LIMIT=200,SNAPSHOT_DEBOUNCE=30000;
+    let snapshotTimer=null;
+    function scheduleSnapshotSync(){
+      if(!session)return;
+      // A burst of price edits should leave one point, not one per keystroke.
+      clearTimeout(snapshotTimer);
+      snapshotTimer=setTimeout(()=>{snapshotTimer=null;pushSnapshot()},SNAPSHOT_DEBOUNCE);
+    }
+    async function pushSnapshot(){
+      if(!session)return;
+      try{await sb('/rest/v1/collection_snapshots',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify({user_id:session.user.id,total:collectionTotal()})})}
+      catch(err){reportError('snapshot-write',err)}
+    }
+    async function loadCloudHistory(){
+      if(!session)return;
+      let rows=await sb('/rest/v1/collection_snapshots?select=total,created_at&order=created_at.asc&limit='+SNAPSHOT_LIMIT);
+      // First sign-in on a device that already has a chart: carry it up rather
+      // than throwing away history the collector can see today.
+      if(!rows.length&&valueHistory.length){
+        try{
+          await sb('/rest/v1/collection_snapshots',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify(valueHistory.map(h=>({user_id:session.user.id,total:h.total,created_at:new Date(h.time).toISOString()})))});
+          rows=valueHistory.map(h=>({total:h.total,created_at:new Date(h.time).toISOString()}));
+        }catch(err){reportError('snapshot-upload',err);return}
+      }
+      valueHistory=rows.map(r=>({time:new Date(r.created_at).getTime(),total:Number(r.total)||0}));
+      localStorage.setItem('the-database-history',JSON.stringify(valueHistory));
+      updateTotals();
+    }
     // ---- Outbox ---------------------------------------------------------
     // Every cloud mutation is recorded here before it is attempted, so a save
     // survives a refresh, a dead connection, or a failed request. Signed-out
@@ -252,7 +285,7 @@ const page = (route, env) => `<!doctype html>
     const qty = c => Math.max(1,Number(c.quantity)||1);
     const cardPrice = c => Number(c.currentValue)>0?Number(c.currentValue):null;
     const collectionTotal = () => cards.reduce((total,c)=>total+(cardPrice(c)||0)*qty(c),0);
-    function recordSnapshot(){const total=collectionTotal(),last=valueHistory[valueHistory.length-1];if(!last||Math.abs(last.total-total)>.001){valueHistory.push({time:Date.now(),total});valueHistory=valueHistory.slice(-40);localStorage.setItem('the-database-history',JSON.stringify(valueHistory))}}
+    function recordSnapshot(){const total=collectionTotal(),last=valueHistory[valueHistory.length-1];if(!last||Math.abs(last.total-total)>.001){valueHistory.push({time:Date.now(),total});valueHistory=valueHistory.slice(-40);localStorage.setItem('the-database-history',JSON.stringify(valueHistory));scheduleSnapshotSync()}}
     
     function chartPath(){let points=valueHistory.slice(-20);if(!points.length)points=[{total:0},{total:0}];if(points.length===1)points=[points[0],points[0]];const vals=points.map(p=>p.total),min=Math.min(...vals),max=Math.max(...vals),range=Math.max(max-min,1);return points.map((p,i)=>{const x=i/(points.length-1)*700,y=160-((p.total-min)/range)*130;return [x,y]}).map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join('')}
     function updateTotals(){const priced=cards.filter(c=>cardPrice(c)!==null),total=collectionTotal(),units=cards.reduce((n,c)=>n+qty(c),0),cost=cards.reduce((n,c)=>n+(Number(c.purchasePrice)||0)*qty(c),0),coverage=cards.length?Math.round(priced.length/cards.length*100):0,baseline=valueHistory.length?valueHistory[0].total:total,growth=total-baseline,profit=total-cost,path=chartPath();$('#portfolio').textContent=priced.length?money(total):'Not priced';$('#pricedCount').textContent=cards.length?priced.length+' of '+cards.length+' entries priced':'Collection is empty';$('#cardTotal').textContent=units+' card'+(units===1?'':'s');$('#averageValue').textContent=priced.length?money(total/priced.reduce((n,c)=>n+qty(c),0)):'—';$('#averageLabel').textContent=priced.length?'Per priced card':'No prices set';$('#coverageValue').textContent=coverage+'%';$('#coverageLabel').textContent=cards.length?priced.length+' of '+cards.length+' entries':'No cards';$('#coverageBar').style.width=coverage+'%';$('#costBasis').textContent=cost?money(cost):'—';$('#costLabel').textContent=cost?'Recorded purchase cost':'Add purchase prices';$('#profitValue').textContent=cost&&priced.length?(profit>=0?'+':'')+money(profit):'—';$('#profitValue').style.color=profit<0?'#ff7b7b':'var(--accent)';$('#profitLabel').textContent=cost?'Current value minus cost':'Value minus cost';$('#growthValue').textContent=(growth>0?'+':'')+money(growth);$('#growthValue').style.color=growth<0?'#ff7b7b':'var(--accent)';$('#growthLabel').textContent=valueHistory.length>1?'Since '+new Date(valueHistory[0].time).toLocaleDateString(undefined,{month:'short',day:'numeric'}):'Change prices to track growth';$('#growthLine').setAttribute('d',path);$('#growthArea').setAttribute('d',path+'L700 160L0 160Z')}
@@ -366,7 +399,7 @@ const page = (route, env) => `<!doctype html>
     function renderPricing(){$('#priceList').innerHTML=cards.map(c=>'<div class="price-row"><div><h3>'+safe(c.player)+'</h3><p>'+safe(c.year)+' '+safe(c.set)+' · '+safe(c.parallel)+' · '+safe(c.grade)+'</p></div><input class="price-input" data-price-id="'+c.id+'" type="number" min="0" step="0.01" inputmode="decimal" value="'+(cardPrice(c)||'')+'" placeholder="0.00" aria-label="Price for '+safe(c.player)+'"><button class="primary" data-save-id="'+c.id+'">Save</button></div>').join('');document.querySelectorAll('[data-save-id]').forEach(b=>b.onclick=async()=>{let id=b.dataset.saveId,input=$('[data-price-id="'+id+'"]'),v=Number(input.value),card=cards.find(c=>String(c.id)===id);if(!card)return;card.currentValue=v>0?v:0;persistDeviceCards();recordSnapshot();if(session)queueSave(card);b.textContent='Saved ✓';setTimeout(()=>b.textContent='Save',1200);render();updateTotals()})}
     function refreshSets(){let current=$('#setFilter').value;$('#setFilter').innerHTML='<option>All sets</option>'+[...new Set(cards.map(c=>c.set))].sort().map(s=>'<option>'+safe(s)+'</option>').join('');if([...$('#setFilter').options].some(o=>o.value===current))$('#setFilter').value=current}
     function showAccount(){let active=!!session;$('#signedOut').classList.toggle('hidden',active);$('#signedIn').classList.toggle('hidden',!active);$('#accountLink').textContent=active?'My account':'Sign in';if(active){$('#accountEmail').textContent=session.user.email;$('#accountName').textContent=session.user.user_metadata&&session.user.user_metadata.display_name||'Your account';let pending=readDeviceCards().length,button=$('#migrateCards');button.disabled=!pending;button.textContent=pending?'Move '+pending+' device card'+(pending===1?'':'s')+' to my account':'No device cards to move'}}
-    async function initAccount(){if(session&&session.expires_at&&session.expires_at*1000<Date.now()+60000){let refresh=session.refresh_token;try{session=null;session=await sb('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:refresh})});localStorage.setItem('the-database-session',JSON.stringify(session))}catch(e){session=null;localStorage.removeItem('the-database-session')}}showAccount();renderSyncStatus();if(session){try{await flushOutbox();await loadCloudCards()}catch(e){$('#syncMessage').textContent='Cloud sync needs attention: '+e.message;reportError('sync-init',e)}}}
+    async function initAccount(){if(session&&session.expires_at&&session.expires_at*1000<Date.now()+60000){let refresh=session.refresh_token;try{session=null;session=await sb('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:refresh})});localStorage.setItem('the-database-session',JSON.stringify(session))}catch(e){session=null;localStorage.removeItem('the-database-session')}}showAccount();renderSyncStatus();if(session){try{await flushOutbox();await loadCloudCards();await loadCloudHistory()}catch(e){$('#syncMessage').textContent='Cloud sync needs attention: '+e.message;reportError('sync-init',e)}}}
     let signupMode=false;$('#authSwitch').onclick=()=>{signupMode=!signupMode;$('#authForm').elements.displayName.classList.toggle('hidden',!signupMode);forgotPassword.classList.toggle('hidden',signupMode);$('#authForm').querySelector('button').textContent=signupMode?'Create account':'Sign in';$('#authSwitch').textContent=signupMode?'Already have an account? Sign in':'New here? Create an account';$('#authMessage').textContent=''};$('#authForm').elements.displayName.classList.add('hidden');
     $('#authForm').onsubmit=async e=>{e.preventDefault();let form=e.target,button=form.querySelector('button');button.disabled=true;$('#authMessage').textContent='';try{if(signupMode){let result=await sb('/auth/v1/signup',{method:'POST',body:JSON.stringify({email:form.elements.email.value,password:form.elements.password.value,data:{display_name:form.elements.displayName.value||''}})});if(result.access_token){session=result;localStorage.setItem('the-database-session',JSON.stringify(session));showAccount();await loadCloudCards()}else $('#authMessage').textContent='Check your email to confirm your account, then sign in.'}else{session=await sb('/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify({email:form.elements.email.value,password:form.elements.password.value})});localStorage.setItem('the-database-session',JSON.stringify(session));showAccount();await loadCloudCards()}}catch(err){$('#authMessage').textContent=err.message}button.disabled=false};
     $('#exportCollection').onclick=exportCollection;

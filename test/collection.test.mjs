@@ -77,5 +77,15 @@ check("cards without a date fall back to id order",
 check("createdAt is read from the row", script.includes("createdAt:r.created_at||''"), true);
 check("new cards get a creation time", script.includes("createdAt:editing?(c.createdAt||''):new Date().toISOString()"), true);
 
+// --- Currency formatting ---
+// Negative amounts previously rendered as "$-500.00". Profit and growth both
+// go negative in normal use, so this is visible whenever a collection dips.
+const moneySrc = slice("const money =", "const CARD_COLORS");
+const { money } = new Function(moneySrc + "; return {money};")();
+check("positive amounts", money(1234.5), "$1,234.50");
+check("zero", money(0), "$0.00");
+check("negative amounts put the sign before the symbol", money(-500), "-$500.00");
+check("small negatives", money(-0.25), "-$0.25");
+
 console.log(failed ? "\nFAILED" : "\nAll collection checks passed");
 process.exit(failed ? 1 : 0);
