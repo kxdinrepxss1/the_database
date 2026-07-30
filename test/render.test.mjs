@@ -60,5 +60,39 @@ const noAuth = await worker.fetch(
 console.log(`${noAuth.status === 401 ? "ok  " : "FAIL"} /api/scan-card without auth -> ${noAuth.status}`);
 if (noAuth.status !== 401) failed = true;
 
+// Photo capture: the scan page must work with and without OpenAI credits.
+const check = (name, got, want) => {
+  const ok = got === want;
+  if (!ok) failed = true;
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+};
+
+const scanPage = async (extraEnv) =>
+  (await worker.fetch(new Request("https://x/scan"), { ...env, ...extraEnv })).text();
+
+const withoutAi = await scanPage({});
+const withAi = await scanPage({ OPENAI_API_KEY: "sk-test" });
+
+check("SCAN_AI is false without a key", withoutAi.includes("SCAN_AI=false"), true);
+check("SCAN_AI is true with a key", withAi.includes("SCAN_AI=true"), true);
+
+// capture="environment" forces the camera and hides the photo library on phones.
+for (const [label, html] of [["without AI", withoutAi], ["with AI", withAi]]) {
+  check(`no capture attribute ${label}`, /capture=/.test(html), false);
+  check(`file inputs accept images ${label}`, (html.match(/type="file" accept="image\/\*"/g) || []).length, 4);
+}
+
+// Copy should not promise recognition the deployment cannot perform.
+check("no scanner promise without a key", /suggests the card details/.test(withoutAi), false);
+check("scanner promise present with a key", /suggests the card details/.test(withAi), true);
+check("offers photos you already took", /photos you already took/.test(withoutAi), true);
+
+// The manual path must survive the AI button not being rendered.
+for (const [label, html] of [["without AI", withoutAi], ["with AI", withAi]]) {
+  const script = html.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</script>"));
+  check(`analyzeCard is guarded ${label}`, script.includes("if(analyze)analyze.onclick"), true);
+  check(`manualScan always rendered ${label}`, script.includes('id="manualScan"'), true);
+}
+
 console.log(failed ? "\nFAILED" : "\nAll checks passed");
 process.exit(failed ? 1 : 0);
