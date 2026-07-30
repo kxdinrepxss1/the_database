@@ -9,6 +9,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - AI-assisted card recognition from a photo, reviewed before anything is saved
 - search and filtering
 - collection value, cost, profit, and growth tracking
+- one-click export of the whole collection, photos included
 - install-to-home-screen support
 
 ## Project structure
@@ -63,6 +64,19 @@ npx wrangler dev
 ```
 
 Open the local address Wrangler prints.
+
+## Exporting a collection
+
+**Account → Export my collection** downloads a dated `.zip` containing:
+
+- `collection.json` — complete records, the format to restore or migrate from
+- `collection.csv` — the same cards as a spreadsheet
+- `photos/` — every front and back image, named by card id
+- `README.txt` — a plain description of the above
+
+The ZIP is built in the browser with no external library, so nothing is
+uploaded anywhere to produce it. Take one before any release that changes how
+cards are stored.
 
 ## Tests
 

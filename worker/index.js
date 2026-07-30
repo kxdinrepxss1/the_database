@@ -33,7 +33,7 @@ const page = (route, env) => `<!doctype html>
     <section class="catalog route-section collection-page"><div class="heading"><div><p class="kicker">COLLECTION</p><h2>Cards in your collection</h2></div><div class="heading-actions"><small id="count"></small><button class="primary" id="addCard">＋ Add card manually</button></div></div><label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="search" placeholder="Search by player, set, team, or parallel…" aria-label="Search collection"></label><div class="filters"><div class="tabs" id="tabs"><button class="active" data-sport="All">All</button><button data-sport="Baseball">Baseball</button><button data-sport="Basketball">Basketball</button><button data-sport="Football">Football</button></div><div class="selects"><select id="setFilter" aria-label="Filter by set"><option>All sets</option></select><select id="sort" aria-label="Sort cards"><option>Recently added</option><option>Player A–Z</option></select></div></div><div class="grid" id="grid"></div><div class="empty hidden" id="empty"><h3>No cards found</h3><p>Try another player or clear the filters.</p><button class="primary" id="clear">Clear filters</button></div></section>
     <section class="pricing route-section pricing-page"><div class="pricing-copy"><p class="kicker">MANUAL PRICING</p><h2>Your cards.<br><em>Your prices.</em></h2><p>Set the value you believe each card is worth. Prices are saved on this device until automatic verified pricing is ready.</p><small class="success">Manual prices are clearly labeled and can be changed anytime.</small></div><div class="comp-card"><div class="price-list" id="priceList"></div></div></section>
     <section class="future route-section scan-page"><div class="future-copy"><p class="kicker">${env.OPENAI_API_KEY ? "CARD SCANNER" : "CARD PHOTOS"}</p><h2>${env.OPENAI_API_KEY ? "Point. Scan.<br><em>Catalog.</em>" : "Snap it.<br><em>Save it.</em>"}</h2><p>${env.OPENAI_API_KEY ? "Photograph the front and back. The scanner suggests the card details, then you confirm them before anything is saved." : "Photograph the front and back, or pick photos you already took, then fill in the details yourself. Automatic recognition is coming later."}</p><button class="outline install" id="installApp">Install The Database</button></div><button class="scan-card" id="scanCard"><div><p class="kicker">${env.OPENAI_API_KEY ? "AI-ASSISTED CAPTURE" : "PHOTO CAPTURE"}</p><h3>${env.OPENAI_API_KEY ? "Scan a card." : "Add a card with photos."}</h3><p>${env.OPENAI_API_KEY ? "Use your phone camera or photo library. A back photo is optional but improves card-number, set, and grading-label recognition." : "Use your camera, or choose a photo you already took. Front and back are both saved with the card."}</p><b>${env.OPENAI_API_KEY ? "Open scanner →" : "Add a card →"}</b></div><aside class="scanner"><i></i><div id="scanMini"></div><small>Tap to begin</small></aside></button><div class="tracking"><p class="kicker">${env.OPENAI_API_KEY ? "REVIEW BEFORE SAVING" : "YOUR PHOTOS, YOUR COLLECTION"}</p><div class="tracking-head"><h3>You stay in control.</h3></div><p class="modal-sub">${env.OPENAI_API_KEY ? "Recognition can confuse similar parallels and variations. Every suggested field remains editable, and prices are still entered manually." : "Photos are stored privately with your card and only you can see them. Nothing is saved until you choose Add to collection."}</p></div></section>
-    <section class="account-page route-section"><div class="account-shell"><div id="signedOut"><p class="kicker">COLLECTOR ACCOUNT</p><h1>Keep your cards everywhere.</h1><p>Create an account to sync your collection and photos between your phone and computer.</p><form class="auth-form" id="authForm"><input class="hidden" name="displayName" placeholder="Display name" autocomplete="name"><input name="email" type="email" required placeholder="Email address" autocomplete="email"><input name="password" type="password" required minlength="6" placeholder="Password" autocomplete="current-password"><button class="primary" type="submit">Sign in</button></form><button class="auth-switch forgot-button" id="forgotPassword" type="button">Forgot password?</button><button class="auth-switch" id="authSwitch" type="button">New here? Create an account</button><p class="auth-message" id="authMessage"></p></div><div class="hidden" id="signedIn"><span class="cloud-badge">Cloud sync active</span><h1 id="accountName">Your account</h1><p id="accountEmail"></p><div class="account-actions"><button class="primary" id="migrateCards" type="button">Move device cards to my account</button><a class="outline" href="/collection">Open cloud collection</a><button class="outline" id="signOut" type="button">Sign out</button></div><p class="auth-message" id="syncMessage"></p></div></div></section>
+    <section class="account-page route-section"><div class="account-shell"><div id="signedOut"><p class="kicker">COLLECTOR ACCOUNT</p><h1>Keep your cards everywhere.</h1><p>Create an account to sync your collection and photos between your phone and computer.</p><form class="auth-form" id="authForm"><input class="hidden" name="displayName" placeholder="Display name" autocomplete="name"><input name="email" type="email" required placeholder="Email address" autocomplete="email"><input name="password" type="password" required minlength="6" placeholder="Password" autocomplete="current-password"><button class="primary" type="submit">Sign in</button></form><button class="auth-switch forgot-button" id="forgotPassword" type="button">Forgot password?</button><button class="auth-switch" id="authSwitch" type="button">New here? Create an account</button><p class="auth-message" id="authMessage"></p></div><div class="hidden" id="signedIn"><span class="cloud-badge">Cloud sync active</span><h1 id="accountName">Your account</h1><p id="accountEmail"></p><div class="account-actions"><button class="primary" id="migrateCards" type="button">Move device cards to my account</button><a class="outline" href="/collection">Open cloud collection</a><button class="outline" id="exportCollection" type="button">Export my collection</button><button class="outline" id="signOut" type="button">Sign out</button></div><p class="auth-message" id="syncMessage"></p></div></div></section>
     <section class="account-page reset-page route-section"><div class="account-shell"><p class="kicker">PASSWORD RECOVERY</p><h1>Choose a new password.</h1><p class="reset-help">Enter a new password for your collector account.</p><form class="auth-form" id="resetForm"><input name="password" type="password" required minlength="8" placeholder="New password" autocomplete="new-password"><input name="confirmPassword" type="password" required minlength="8" placeholder="Confirm new password" autocomplete="new-password"><button class="primary" type="submit">Update password</button></form><p class="auth-message" id="resetMessage"></p><a class="outline hidden" id="returnToSignIn" href="/account">Return to sign in</a></div></section>
   </main>
   <footer><a class="brand" href="/"><span class="logo" aria-hidden="true"><i></i><b></b></span>The Database</a><p>SPORTS CARD COLLECTION · PRIVATE COLLECTIONS</p></footer>
@@ -78,6 +78,81 @@ const page = (route, env) => `<!doctype html>
     async function deleteStoredPhoto(path){if(!path)return;try{await fetch(SUPABASE_URL+'/storage/v1/object/card-photos/'+path,{method:'DELETE',headers:authHeaders()})}catch(e){}}
     async function deleteCloudCard(c){if(!session)return;await sb('/rest/v1/cards?id=eq.'+encodeURIComponent(c.id),{method:'DELETE'});await deleteStoredPhoto(c.frontImagePath);await deleteStoredPhoto(c.backImagePath)}
     async function refreshPhotoUrls(){if(!session)return;try{for(let c of customCards){if(c.frontImagePath)c.photo=await signedPhoto(c.frontImagePath);if(c.backImagePath)c.photoBack=await signedPhoto(c.backImagePath)}lastPhotoSign=Date.now();render()}catch(e){}}
+    // Minimal store-only ZIP writer. Photos are already JPEG, so skipping
+    // compression costs nothing and keeps this dependency-free.
+    const CRC_TABLE=(()=>{let t=new Uint32Array(256);for(let i=0;i<256;i++){let c=i;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[i]=c>>>0}return t})();
+    function crc32(bytes){let c=0xFFFFFFFF;for(let i=0;i<bytes.length;i++)c=CRC_TABLE[(c^bytes[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
+    function zipStore(entries){
+      let encoder=new TextEncoder(),parts=[],central=[],offset=0,count=0,now=new Date();
+      let dosTime=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1);
+      let dosDate=((Math.max(1980,now.getFullYear())-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate();
+      for(let entry of entries){
+        let name=encoder.encode(entry.name),data=entry.data,sum=crc32(data);
+        let local=new DataView(new ArrayBuffer(30));
+        local.setUint32(0,0x04034b50,true);local.setUint16(4,20,true);local.setUint16(6,0,true);local.setUint16(8,0,true);
+        local.setUint16(10,dosTime,true);local.setUint16(12,dosDate,true);
+        local.setUint32(14,sum,true);local.setUint32(18,data.length,true);local.setUint32(22,data.length,true);
+        local.setUint16(26,name.length,true);local.setUint16(28,0,true);
+        parts.push(new Uint8Array(local.buffer),name,data);
+        let dir=new DataView(new ArrayBuffer(46));
+        dir.setUint32(0,0x02014b50,true);dir.setUint16(4,20,true);dir.setUint16(6,20,true);dir.setUint16(8,0,true);
+        dir.setUint16(10,0,true);dir.setUint16(12,dosTime,true);dir.setUint16(14,dosDate,true);
+        dir.setUint32(16,sum,true);dir.setUint32(20,data.length,true);dir.setUint32(24,data.length,true);
+        dir.setUint16(28,name.length,true);dir.setUint16(30,0,true);dir.setUint16(32,0,true);
+        dir.setUint16(34,0,true);dir.setUint16(36,0,true);dir.setUint32(38,0,true);dir.setUint32(42,offset,true);
+        central.push(new Uint8Array(dir.buffer),name);
+        offset+=30+name.length+data.length;count++;
+      }
+      let dirSize=central.reduce((n,p)=>n+p.length,0);
+      let end=new DataView(new ArrayBuffer(22));
+      end.setUint32(0,0x06054b50,true);end.setUint16(4,0,true);end.setUint16(6,0,true);
+      end.setUint16(8,count,true);end.setUint16(10,count,true);
+      end.setUint32(12,dirSize,true);end.setUint32(16,offset,true);end.setUint16(20,0,true);
+      return new Blob(parts.concat(central,[new Uint8Array(end.buffer)]),{type:'application/zip'});
+    }
+    async function photoBytes(src){
+      if(String(src).startsWith('data:'))return new Uint8Array(await dataUrlBlob(src).arrayBuffer());
+      let response=await fetch(src);
+      if(!response.ok)throw new Error('photo unavailable');
+      return new Uint8Array(await response.arrayBuffer());
+    }
+    const EXPORT_COLUMNS=['id','player','year','sport','set','number','team','parallel','grade','quantity','currentValue','purchasePrice','purchaseDate','storageLocation','collectionStatus','notes','frontPhoto','backPhoto'];
+    const csvCell = value => '"'+String(value??'').split('"').join('""')+'"';
+    async function exportCollection(){
+      let button=$('#exportCollection'),label='Export my collection',message=$('#syncMessage'),NL=String.fromCharCode(13,10);
+      let list=cards.slice();
+      message.classList.remove('reset-success');
+      if(!list.length){message.textContent='There are no cards to export yet.';return}
+      button.disabled=true;
+      try{
+        let rows=list.map(c=>({id:String(c.id),player:c.player,year:c.year,sport:c.sport,set:c.set,number:c.number,team:c.team,parallel:c.parallel,grade:c.grade,quantity:qty(c),currentValue:cardPrice(c)||'',purchasePrice:Number(c.purchasePrice)||0,purchaseDate:c.purchaseDate||'',storageLocation:c.location||'',collectionStatus:c.collectionStatus||'',notes:c.notes||'',frontPhoto:'',backPhoto:''})),photos=[],missing=0;
+        for(let i=0;i<list.length;i++){
+          button.textContent='Collecting photos '+(i+1)+' of '+list.length+'…';
+          for(let side of ['front','back']){
+            let src=side==='back'?list[i].photoBack:list[i].photo;
+            if(!src)continue;
+            try{
+              let name='photos/'+rows[i].id+'-'+side+'.jpg';
+              photos.push({name,data:await photoBytes(src)});
+              rows[i][side==='back'?'backPhoto':'frontPhoto']=name;
+            }catch(e){missing++}
+          }
+        }
+        button.textContent='Building your file…';
+        let manifest={app:'The Database',exportVersion:1,exportedAt:new Date().toISOString(),account:session?session.user.email:null,source:session?'cloud':'device',cardCount:rows.length,photoCount:photos.length,photosUnavailable:missing,cards:rows};
+        let csv=[EXPORT_COLUMNS.map(csvCell).join(',')].concat(rows.map(r=>EXPORT_COLUMNS.map(k=>csvCell(r[k])).join(','))).join(NL);
+        let notes=['The Database — collection export','','Exported: '+manifest.exportedAt,'Cards: '+manifest.cardCount,'Photos: '+manifest.photoCount,'','collection.json  Complete records, best for restoring or moving your data.','collection.csv   Same cards as a spreadsheet.','photos/          Front and back images, named by card id.','','Keep this file somewhere safe. It is a complete copy of your collection.'].join(NL);
+        let encoder=new TextEncoder();
+        let blob=zipStore([{name:'collection.json',data:encoder.encode(JSON.stringify(manifest,null,2))},{name:'collection.csv',data:encoder.encode(csv)},{name:'README.txt',data:encoder.encode(notes)}].concat(photos));
+        let url=URL.createObjectURL(blob),link=document.createElement('a');
+        link.href=url;link.download='the-database-export-'+new Date().toISOString().slice(0,10)+'.zip';
+        document.body.appendChild(link);link.click();link.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),60000);
+        message.textContent='Exported '+rows.length+' card'+(rows.length===1?'':'s')+' and '+photos.length+' photo'+(photos.length===1?'':'s')+'.'+(missing?' '+missing+' photo'+(missing===1?'':'s')+' could not be downloaded and were left out.':'');
+        if(!missing)message.classList.add('reset-success');
+      }catch(err){message.textContent='The export could not be completed: '+(err&&err.message||'unknown error');}
+      button.disabled=false;button.textContent=label;
+    }
     const qty = c => Math.max(1,Number(c.quantity)||1);
     const cardPrice = c => Number(prices[c.id])>0?Number(prices[c.id]):null;
     const collectionTotal = () => cards.reduce((total,c)=>total+(cardPrice(c)||0)*qty(c),0);
@@ -178,6 +253,7 @@ const page = (route, env) => `<!doctype html>
     async function initAccount(){if(session&&session.expires_at&&session.expires_at*1000<Date.now()+60000){let refresh=session.refresh_token;try{session=null;session=await sb('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:refresh})});localStorage.setItem('the-database-session',JSON.stringify(session))}catch(e){session=null;localStorage.removeItem('the-database-session')}}showAccount();if(session){try{await loadCloudCards()}catch(e){$('#syncMessage').textContent='Cloud sync needs attention: '+e.message}}}
     let signupMode=false;$('#authSwitch').onclick=()=>{signupMode=!signupMode;$('#authForm').elements.displayName.classList.toggle('hidden',!signupMode);forgotPassword.classList.toggle('hidden',signupMode);$('#authForm').querySelector('button').textContent=signupMode?'Create account':'Sign in';$('#authSwitch').textContent=signupMode?'Already have an account? Sign in':'New here? Create an account';$('#authMessage').textContent=''};$('#authForm').elements.displayName.classList.add('hidden');
     $('#authForm').onsubmit=async e=>{e.preventDefault();let form=e.target,button=form.querySelector('button');button.disabled=true;$('#authMessage').textContent='';try{if(signupMode){let result=await sb('/auth/v1/signup',{method:'POST',body:JSON.stringify({email:form.elements.email.value,password:form.elements.password.value,data:{display_name:form.elements.displayName.value||''}})});if(result.access_token){session=result;localStorage.setItem('the-database-session',JSON.stringify(session));showAccount();await loadCloudCards()}else $('#authMessage').textContent='Check your email to confirm your account, then sign in.'}else{session=await sb('/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify({email:form.elements.email.value,password:form.elements.password.value})});localStorage.setItem('the-database-session',JSON.stringify(session));showAccount();await loadCloudCards()}}catch(err){$('#authMessage').textContent=err.message}button.disabled=false};
+    $('#exportCollection').onclick=exportCollection;
     $('#signOut').onclick=async()=>{try{await sb('/auth/v1/logout',{method:'POST'})}catch(e){}session=null;localStorage.removeItem('the-database-session');location.reload()};
     $('#migrateCards').onclick=async()=>{let button=$('#migrateCards'),pending=readDeviceCards(),remaining=pending.slice(),moved=0;if(!session){$('#syncMessage').textContent='Sign in before moving device cards.';return}if(!pending.length){$('#syncMessage').textContent='No device cards were found to move.';button.disabled=true;button.textContent='No device cards to move';return}button.disabled=true;button.textContent='Moving cards…';try{for(let original of pending){let c=Object.assign({},original,{id:crypto.randomUUID()});if(Number(prices[original.id])>0)prices[c.id]=Number(prices[original.id]);await cloudSaveCard(c);delete prices[original.id];remaining=remaining.filter(x=>String(x.id)!==String(original.id));localStorage.setItem('the-database-cards',JSON.stringify(remaining));localStorage.setItem('the-database-prices',JSON.stringify(prices));moved++}await loadCloudCards();$('#syncMessage').textContent=moved+' device card'+(moved===1?'':'s')+' moved to your account.';button.disabled=true;button.textContent='Migration complete'}catch(err){$('#syncMessage').textContent=moved?moved+' card'+(moved===1?'':'s')+' moved before this error, the rest are still on this device: '+err.message:err.message;button.disabled=false;button.textContent='Try migration again'}};
     refreshSets();$('#scanMini').innerHTML=art(cards[1]||cards[0]||previewCard,true);
@@ -224,7 +300,7 @@ export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
     if (path === "/manifest.webmanifest") return new Response(JSON.stringify({name:"The Database",short_name:"Database",description:"Browse and manage a sports card collection.",start_url:"/",display:"standalone",background_color:"#0b0f0d",theme_color:"#0b0f0d"}), {headers:{"content-type":"application/manifest+json"}});
-    if (path === "/sw.js") return new Response("const CACHE='the-database-v9';self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/','/collection','/pricing','/scan','/account','/reset-password']))) });self.addEventListener('activate',e=>e.waitUntil(Promise.all([clients.claim(),caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))])));self.addEventListener('fetch',e=>{if(e.request.method==='GET')e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)))})", {headers:{"content-type":"application/javascript","cache-control":"no-cache"}});
+    if (path === "/sw.js") return new Response("const CACHE='the-database-v10';self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/','/collection','/pricing','/scan','/account','/reset-password']))) });self.addEventListener('activate',e=>e.waitUntil(Promise.all([clients.claim(),caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))])));self.addEventListener('fetch',e=>{if(e.request.method==='GET')e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)))})", {headers:{"content-type":"application/javascript","cache-control":"no-cache"}});
     if (path === "/api/scan-card" && request.method === "POST") {
       const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers:{"content-type":"application/json","cache-control":"no-store"}});
       if (!env.OPENAI_API_KEY) return json({error:"Automatic recognition is not configured yet. Add OPENAI_API_KEY as a Cloudflare secret."}, 503);
