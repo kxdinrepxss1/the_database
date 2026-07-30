@@ -9,12 +9,18 @@ insert into auth.users (id, email) values
 on conflict do nothing;
 
 grant usage on schema public, storage to authenticated;
-grant select, insert, update, delete on public.cards, public.scan_events, storage.objects to authenticated;
+grant select, insert, update, delete
+  on public.cards, public.scan_events, public.error_events, storage.objects
+  to authenticated;
+
+-- Start from a known state so this file can be run repeatedly.
+delete from public.scan_events  where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
+delete from public.error_events where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
+delete from public.cards        where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
 
 insert into public.cards (id, user_id, player, updated_at) values
   ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'Alice Card', now() - interval '5 days'),
-  ('bbbbbbbb-0000-0000-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'Bob Card',   now() - interval '5 days')
-on conflict (id) do nothing;
+  ('bbbbbbbb-0000-0000-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'Bob Card',   now() - interval '5 days');
 
 -- === updated_at trigger ===
 update public.cards set player = 'Alice Card v2'
@@ -69,5 +75,35 @@ end $$;
 select 'alice cannot read bob scans: ' ||
   case when count(*) = 0 then 'PASS' else 'FAIL' end
 from public.scan_events where user_id = '22222222-2222-2222-2222-222222222222';
+
+-- === error_events ===
+insert into public.error_events (user_id, context, message, app_version)
+values ('11111111-1111-1111-1111-111111111111', 'card-save', 'something broke', 'v11');
+
+select 'alice can record her own errors: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.error_events where user_id = '11111111-1111-1111-1111-111111111111';
+
+-- Alice must not be able to file an error report as Bob.
+do $$
+begin
+  insert into public.error_events (user_id, context, message)
+  values ('22222222-2222-2222-2222-222222222222', 'forged', 'not mine');
+  raise notice 'error report as another user blocked: FAIL';
+exception when insufficient_privilege then
+  raise notice 'error report as another user blocked: PASS';
+end $$;
+
+reset role;
+
+-- Bob's own error, inserted with RLS bypassed, must stay invisible to Alice.
+insert into public.error_events (user_id, context, message)
+values ('22222222-2222-2222-2222-222222222222', 'private', 'bob only');
+
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+select 'alice cannot read bob errors: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.error_events where user_id = '22222222-2222-2222-2222-222222222222';
 
 reset role;

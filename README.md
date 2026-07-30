@@ -17,7 +17,8 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - `worker/index.js` — the complete website and application logic
 - `supabase/setup.sql` — database, storage, and privacy policies
 - `supabase/tests/` — optional checks for the row-level-security policies
-- `test/` — checks that the worker renders and that scan limits hold
+- `test/` — rendering, scan limits, export archives, and error reporting
+- `.github/workflows/test.yml` — runs those checks on every pull request
 - `wrangler.toml` — configuration for independent Cloudflare Workers hosting
 - `.dev.vars.example` — local environment-variable template
 
@@ -32,7 +33,28 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 The SQL enables row-level security so signed-in users can only access their own
 cards and photo folder. It is safe to re-run at any time, and you should re-run
 it after pulling changes — the card scanner refuses to run until the
-`scan_events` table it meters against exists.
+`scan_events` table it meters against exists, and error reporting is silently
+skipped until `error_events` does.
+
+## Seeing what is failing
+
+Signed-in clients record their own failures to `error_events`. Reports contain
+the error, where it happened, the browser, and the build — never card data.
+Read them from the Supabase SQL editor, which bypasses row-level security:
+
+```sql
+select created_at, app_version, context, message, count(*) over () as total
+from public.error_events
+where created_at > now() - interval '7 days'
+order by created_at desc
+limit 50;
+```
+
+Reporting is bounded on purpose: identical errors are recorded once per page
+load and capped at ten per session, so a failure loop cannot flood the table.
+Bump `VERSION` in `worker/index.js` when the client script changes — it names
+the service-worker cache and stamps each report, which is what lets you tell
+whether a report came from the build you just shipped.
 
 ## Configuration
 
@@ -85,8 +107,12 @@ npm test
 ```
 
 This renders every route, syntax-checks the client script the worker inlines,
-and exercises the scan endpoint's daily limit against a mocked Supabase and
-OpenAI. No network access or API keys needed.
+exercises the scan endpoint's daily limit against a mocked Supabase and OpenAI,
+parses a generated export archive back the way `unzip` does, and checks that
+error reporting stays bounded. No network access or API keys needed.
+
+The same suite runs on every pull request and every push to `main` via
+`.github/workflows/test.yml`.
 
 The policy tests under `supabase/tests/` are optional and need a scratch
 PostgreSQL database — never point them at your real project:
