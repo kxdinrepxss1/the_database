@@ -6,6 +6,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - private cloud-synced collections
 - front and back card photos
 - manual card entry, editing, pricing, and removal
+- structured storage locations, so a card can actually be found again
 - AI-assisted card recognition from a photo, reviewed before anything is saved
 - search and filtering
 - collection value, cost, profit, and growth tracking
@@ -36,6 +37,18 @@ it after pulling changes — the card scanner refuses to run until the
 `scan_events` table it meters against exists, error reporting is silently
 skipped until `error_events` does, and the growth chart stays device-local
 until `collection_snapshots` does.
+
+## Where cards live
+
+A card records a **container** (Binder 2, Monster Box A), a **section** (Page 4,
+Row 3) and a **slot**. The collection page filters by container and shows how
+many cards each one holds, search covers all three parts, and the form suggests
+containers and sections already in use so entries stay consistent.
+
+Locations entered before these fields existed are split automatically, treating
+both `/` and `,` as separators — cloud collections by `setup.sql`, device
+collections on load. The original text is kept rather than dropped, so a wrong
+split can always be traced back to what was typed.
 
 ## How saving works
 

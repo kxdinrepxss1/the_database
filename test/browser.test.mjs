@@ -391,6 +391,106 @@ const queued = (page) => page.evaluate(() =>
   await context.close();
 }
 
+// --- Structured storage locations -------------------------------------------
+{
+  const { context, page, errors } = await open("/collection");
+
+  const add = async (player, container, section, slot) => {
+    await page.click("#addCard");
+    await page.fill('[name="player"]', player);
+    await page.fill('[name="year"]', "2024");
+    await page.fill('[name="set"]', "Topps");
+    await page.fill('[name="container"]', container);
+    await page.fill('[name="section"]', section);
+    await page.fill('[name="slot"]', slot);
+    await page.click(".submit-card");
+    await page.waitForTimeout(350);
+  };
+  await add("Aaron Judge", "Binder 2", "Page 4", "Slot 3");
+  await add("Juan Soto", "Binder 2", "Page 9", "Slot 1");
+  await add("Shohei Ohtani", "Monster Box A", "Row 3", "");
+
+  check("all three cards saved", await page.locator(".catalog-card").count(), 3);
+  check("location parts are stored separately", await page.evaluate(() => {
+    const c = JSON.parse(localStorage.getItem("the-database-cards")).find((x) => x.player === "Aaron Judge");
+    return [c.container, c.section, c.slot];
+  }), ["Binder 2", "Page 4", "Slot 3"]);
+
+  // Filtering by container is the point of the exercise.
+  const options = await page.locator("#containerFilter option").allTextContents();
+  check("containers are listed with counts", options,
+    ["All locations", "Binder 2 (2)", "Monster Box A (1)"]);
+
+  await page.selectOption("#containerFilter", "Binder 2");
+  await page.waitForTimeout(250);
+  check("filtering by container narrows the grid", await page.locator(".catalog-card").count(), 2);
+  await page.selectOption("#containerFilter", "Monster Box A");
+  await page.waitForTimeout(250);
+  check("a second container filters independently", await page.locator(".catalog-card").count(), 1);
+
+  // Narrow to nothing so the empty state, and its clear button, appear.
+  await page.fill("#search", "nothing matches this");
+  await page.waitForTimeout(250);
+  check("over-filtering shows the empty state", await page.locator("#empty:not(.hidden)").count(), 1);
+  await page.click("#clear");
+  await page.waitForTimeout(250);
+  check("clearing filters restores everything", await page.locator(".catalog-card").count(), 3);
+  check("clearing resets the container filter",
+    await page.locator("#containerFilter").inputValue(), "All locations");
+
+  // Searching should find a card by where it lives.
+  await page.fill("#search", "page 9");
+  await page.waitForTimeout(250);
+  check("search finds a card by its section", await page.locator(".catalog-card").count(), 1);
+  await page.fill("#search", "monster box");
+  await page.waitForTimeout(250);
+  check("search finds a card by its container", await page.locator(".catalog-card").count(), 1);
+  await page.fill("#search", "");
+  await page.waitForTimeout(250);
+
+  // Previously used values are offered so entries stay consistent.
+  await page.click("#addCard");
+  check("containers are suggested", await page.locator("#containerOptions option").count(), 2);
+  check("sections are suggested", await page.locator("#sectionOptions option").count(), 3);
+  await page.click(".close");
+
+  check("no errors across the location flow", errors, []);
+  await context.close();
+}
+
+// Locations typed before the fields were split must carry over.
+{
+  const { context, page, errors } = await open("/collection");
+  await page.evaluate(() => {
+    localStorage.setItem("the-database-cards", JSON.stringify([
+      { id: "aaaaaaaa-2222-4222-8222-222222222222", player: "Legacy Comma", year: "2023",
+        sport: "Baseball", set: "Topps", number: "#1", parallel: "Base", grade: "Raw",
+        team: "NYY", quantity: 1, location: "Binder 7, Page 2", initials: "LC", color: "blue" },
+      { id: "bbbbbbbb-2222-4222-8222-222222222222", player: "Legacy Slash", year: "2023",
+        sport: "Baseball", set: "Topps", number: "#2", parallel: "Base", grade: "Raw",
+        team: "NYY", quantity: 1, location: "Box A / Row 3 / Slot 9", initials: "LS", color: "red" },
+      { id: "cccccccc-2222-4222-8222-222222222222", player: "Legacy Plain", year: "2023",
+        sport: "Baseball", set: "Topps", number: "#3", parallel: "Base", grade: "Raw",
+        team: "NYY", quantity: 1, location: "Shoebox", initials: "LP", color: "gold" },
+    ]));
+  });
+  await page.reload();
+  await page.waitForTimeout(500);
+
+  const split = await page.evaluate(() => JSON.parse(localStorage.getItem("the-database-cards"))
+    .map((c) => [c.container, c.section, c.slot]));
+  check("comma-separated text is split", split[0], ["Binder 7", "Page 2", ""]);
+  check("slash-separated text is split", split[1], ["Box A", "Row 3", "Slot 9"]);
+  check("a bare container is left as one", split[2], ["Shoebox", "", ""]);
+  check("the original text is preserved", await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("the-database-cards"))[0].location), "Binder 7, Page 2");
+  check("migrated containers populate the filter",
+    await page.locator("#containerFilter option").allTextContents(),
+    ["All locations", "Binder 7 (1)", "Box A (1)", "Shoebox (1)"]);
+  check("no errors during the location upgrade", errors, []);
+  await context.close();
+}
+
 await browser.close();
 server.close();
 console.log(failed ? "\nFAILED" : "\nAll browser checks passed");

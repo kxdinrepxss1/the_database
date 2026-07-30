@@ -16,6 +16,9 @@ create table if not exists public.cards (
   purchase_date date,
   current_value numeric(12,2),
   storage_location text,
+  storage_container text,
+  storage_section text,
+  storage_slot text,
   collection_status text default 'Personal collection',
   notes text,
   front_image_path text,
@@ -26,7 +29,24 @@ create table if not exists public.cards (
   updated_at timestamptz not null default now()
 );
 
+alter table public.cards add column if not exists storage_container text;
+alter table public.cards add column if not exists storage_section text;
+alter table public.cards add column if not exists storage_slot text;
+
+-- Split whatever collectors already typed into the three fields, treating both
+-- "/" and "," as separators: "Binder 2, page 4" and "Box A / Row 3 / Slot 9"
+-- both do the right thing. storage_location is kept rather than dropped, so a
+-- wrong split can always be traced back to what was originally entered.
+update public.cards set
+  storage_container = nullif(btrim(split_part(replace(storage_location, ',', '/'), '/', 1)), ''),
+  storage_section   = nullif(btrim(split_part(replace(storage_location, ',', '/'), '/', 2)), ''),
+  storage_slot      = nullif(btrim((regexp_match(replace(storage_location, ',', '/'), '^[^/]*/[^/]*/(.*)$'))[1]), '')
+where storage_location is not null
+  and btrim(storage_location) <> ''
+  and storage_container is null;
+
 create index if not exists cards_user_created_idx on public.cards (user_id, created_at desc);
+create index if not exists cards_user_container_idx on public.cards (user_id, storage_container);
 
 create or replace function public.touch_updated_at()
 returns trigger language plpgsql as $$
