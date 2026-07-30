@@ -3,6 +3,10 @@ main = "worker/index.js"
 compatibility_date = "2026-07-26"
 keep_vars = true
 
+# Safe to commit: the Supabase publishable key is meant for browser clients and
+# is protected by row-level security. OPENAI_API_KEY is NOT here on purpose —
+# it is a real secret, set with `npx wrangler secret put OPENAI_API_KEY`.
 [vars]
 SUPABASE_URL = "https://xedhodfxzsbjfcivbjlg.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_4YwalQLdluD3K0M5C8SIDQ_QoPM-7HE"
+SCAN_DAILY_LIMIT = "25"

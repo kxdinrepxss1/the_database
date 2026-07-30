@@ -1,3 +1,10 @@
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_PUBLISHABLE_KEY=your-publishable-key
 
+# Required only for the card scanner. Without it /api/scan-card returns 503 and
+# the scan screen falls back to manual entry.
+OPENAI_API_KEY=sk-your-key
+
+# Optional overrides.
+OPENAI_VISION_MODEL=gpt-4.1-mini
+SCAN_DAILY_LIMIT=25
