@@ -88,6 +88,40 @@ create policy "Collectors can record their scans"
 on public.scan_events for insert
 with check (auth.uid() = user_id);
 
+-- Client error log. Surfaces what is actually failing in real use instead of
+-- waiting for someone to mention it. Deliberately holds no card data: only the
+-- error, where it happened, the browser, and the build it came from.
+create table if not exists public.error_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  context text,
+  message text,
+  detail text,
+  user_agent text,
+  app_version text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists error_events_created_idx on public.error_events (created_at desc);
+
+alter table public.error_events enable row level security;
+
+-- Collectors may record their own errors and read their own back. Reading
+-- everyone's errors is done from the Supabase SQL editor, which bypasses RLS.
+drop policy if exists "Collectors can record their errors" on public.error_events;
+create policy "Collectors can record their errors"
+on public.error_events for insert
+with check (auth.uid() = user_id);
+
+drop policy if exists "Collectors can read their errors" on public.error_events;
+create policy "Collectors can read their errors"
+on public.error_events for select
+using (auth.uid() = user_id);
+
+-- Housekeeping: these grow forever. Run occasionally, or schedule with pg_cron.
+--   delete from public.error_events where created_at < now() - interval '90 days';
+--   delete from public.scan_events  where created_at < now() - interval '90 days';
+
 insert into storage.buckets (id, name, public)
 values ('card-photos', 'card-photos', false)
 on conflict (id) do update set public = false;
