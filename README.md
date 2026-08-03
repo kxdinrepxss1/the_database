@@ -165,6 +165,22 @@ catch a reference to a variable that no longer exists; this one can.
 Both run on every pull request and every push to `main` via
 `.github/workflows/test.yml`.
 
+## Measuring performance
+
+```bash
+npm run perf            # 100 cards, 40ms simulated latency
+node test/perf.mjs 500 80
+```
+
+Serves the worker with a mock backend that delays every call, then reports how
+long the collection takes to appear and how many backend requests it took.
+
+Photo URLs are signed rather than public, so each one costs a round-trip. Cards
+are rendered as soon as the rows arrive and photos are attached afterwards,
+signed in a single bulk request and cached for their lifetime. Before that,
+signing ran one request per photo in sequence and nothing rendered until it
+finished — a 100-card collection took about ten seconds to show a single card.
+
 The policy tests under `supabase/tests/` are optional and need a scratch
 PostgreSQL database — never point them at your real project:
 

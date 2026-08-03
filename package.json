@@ -6,7 +6,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "node test/render.test.mjs && node test/scan.test.mjs && node test/export.test.mjs && node test/errors.test.mjs && node test/collection.test.mjs",
-    "test:browser": "node test/browser.test.mjs"
+    "test:browser": "node test/browser.test.mjs",
+    "perf": "node test/perf.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.0"

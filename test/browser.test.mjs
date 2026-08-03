@@ -21,12 +21,21 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0 };
+const backend = { cards: [], snapshots: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
+  if (url.pathname.startsWith("/storage/v1/object/sign/")) {
+    let parsed = {}; try { parsed = JSON.parse(body || "{}"); } catch {}
+    if (Array.isArray(parsed.paths)) {
+      backend.signCalls++;
+      return [200, parsed.paths.map((path) => ({ path, signedURL: "/photo.jpg?token=x" }))];
+    }
+    backend.signCalls++;
+    return [200, { signedURL: "/photo.jpg?token=x" }];
+  }
   if (url.pathname.startsWith("/storage/v1/")) return [200, {}];
   if (url.pathname === "/rest/v1/collection_snapshots") {
     // What Supabase actually returns when setup.sql has not been re-run.
@@ -517,6 +526,48 @@ const queued = (page) => page.evaluate(() =>
   check("no alarming sync message about the collection",
     (await page.locator("#syncMessage").textContent()).trim(), "");
   backend.noSnapshotTable = false;
+  await context.close();
+}
+
+// --- Photo loading must not gate the collection ------------------------------
+// Signing used to run one request per photo, in sequence, before anything
+// rendered: a 100-card collection took ten seconds to show a single card.
+{
+  backend.snapshots = []; backend.failWrites = false; backend.noSnapshotTable = false;
+  backend.signCalls = 0;
+  backend.cards = Array.from({ length: 30 }, (_, i) => ({
+    id: `${String(i).padStart(8, "0")}-4444-4444-8444-444444444444`,
+    user_id: USER.id, player: `Player ${i}`, year: 2024, sport: "Baseball",
+    card_set: "Topps", card_number: `#${i}`, parallel: "Base", grade: "Raw", quantity: 1,
+    front_image_path: `${USER.id}/${i}-front.jpg`, back_image_path: `${USER.id}/${i}-back.jpg`,
+  }));
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  await page.goto(origin + "/collection");
+  await page.waitForTimeout(900);
+
+  check("all cards render", await page.locator(".catalog-card").count(), 30);
+  // 60 photos across 30 cards must not mean 60 requests.
+  check("photos are signed in bulk, not one at a time", backend.signCalls <= 2, true);
+  check("photos are attached", await page.locator(".card-art.has-photo").count() > 0, true);
+  check("signed urls are cached for reuse", await page.evaluate(() =>
+    Object.keys(JSON.parse(localStorage.getItem("the-database-signed") || "{}")).length), 60);
+  // Off-screen images should not be fetched until scrolled to.
+  check("images are lazily loaded", await page.evaluate(() =>
+    [...document.querySelectorAll(".card-photo")].every((i) => i.loading === "lazy")), true);
+
+  // Revisiting must reuse the cache rather than re-signing everything.
+  const before = backend.signCalls;
+  await page.goto(origin + "/pricing");
+  await page.waitForTimeout(900);
+  check("navigating does not re-sign photos", backend.signCalls - before, 0);
   await context.close();
 }
 
