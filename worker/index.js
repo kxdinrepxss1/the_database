@@ -1,7 +1,7 @@
 // Single source of truth for the build. Names the service-worker cache and is
 // stamped onto error reports so a report can be tied to the code that produced
 // it. Bump it whenever the client script changes.
-const VERSION = "v24";
+const VERSION = "v25";
 
 const page = (route, env) => `<!doctype html>
 <html lang="en">
@@ -482,7 +482,7 @@ const page = (route, env) => `<!doctype html>
     async function loadProfile(){
       if(!session)return;
       try{
-        let rows=await sb('/rest/v1/profiles?select=*&user_id=eq.'+encodeURIComponent(session.user.id));
+        let rows=await sb('/rest/v1/collector_profiles?select=*&user_id=eq.'+encodeURIComponent(session.user.id));
         profile=rows&&rows[0]||null;
         renderShare();
       }catch(err){reportError('profile-read',err)}
@@ -509,7 +509,7 @@ const page = (route, env) => `<!doctype html>
       }
       button.disabled=true;button.textContent='Saving…';
       try{
-        await sb('/rest/v1/profiles?on_conflict=user_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=representation'},body:JSON.stringify({
+        await sb('/rest/v1/collector_profiles?on_conflict=user_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=representation'},body:JSON.stringify({
           user_id:session.user.id,
           handle:handle||null,
           display_name:$('#shareName').value.trim()||null,

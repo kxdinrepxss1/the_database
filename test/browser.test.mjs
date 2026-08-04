@@ -47,7 +47,7 @@ async function supabase(req, url, body) {
       return [201, null];
     }
   }
-  if (url.pathname === "/rest/v1/profiles") {
+  if (url.pathname === "/rest/v1/collector_profiles") {
     if (req.method === "GET") {
       const id = decodeURIComponent((url.search.match(/user_id=eq\.([^&]+)/) || [])[1] || "");
       return [200, backend.profiles.filter((p) => p.user_id === id)];
@@ -55,7 +55,7 @@ async function supabase(req, url, body) {
     if (req.method === "POST") {
       const row = JSON.parse(body);
       if (backend.takenHandles.includes(row.handle)) {
-        return [409, { message: 'duplicate key value violates unique constraint "profiles_handle_key"' }];
+        return [409, { message: 'duplicate key value violates unique constraint "collector_profiles_handle_key"' }];
       }
       backend.profiles = backend.profiles.filter((p) => p.user_id !== row.user_id).concat(row);
       return [201, [row]];

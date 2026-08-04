@@ -84,10 +84,15 @@ create policy "Collectors can delete their cards"
 on public.cards for delete
 using (auth.uid() = user_id);
 
+-- Deliberately not called "profiles": Supabase's own user-management quickstart
+-- creates a public.profiles table keyed on id, and "create table if not exists"
+-- would silently skip creation and then fail on the first policy referencing a
+-- column that table does not have.
+--
 -- Collector profiles. A profile exists only when someone chooses to share, and
 -- is_public is the master switch: nothing is visible publicly without it, no
 -- matter what individual cards say.
-create table if not exists public.profiles (
+create table if not exists public.collector_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   handle text unique,
   display_name text,
@@ -95,42 +100,47 @@ create table if not exists public.profiles (
   show_values boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint profiles_handle_format
+  constraint collector_profiles_handle_format
     check (handle is null or handle ~ '^[a-z0-9][a-z0-9_-]{2,29}$')
 );
 
-drop trigger if exists profiles_touch_updated_at on public.profiles;
-create trigger profiles_touch_updated_at
-before update on public.profiles
+alter table public.collector_profiles add column if not exists handle text;
+alter table public.collector_profiles add column if not exists display_name text;
+alter table public.collector_profiles add column if not exists is_public boolean not null default false;
+alter table public.collector_profiles add column if not exists show_values boolean not null default false;
+
+drop trigger if exists collector_profiles_touch_updated_at on public.collector_profiles;
+create trigger collector_profiles_touch_updated_at
+before update on public.collector_profiles
 for each row execute function public.touch_updated_at();
 
-alter table public.profiles enable row level security;
+alter table public.collector_profiles enable row level security;
 
-drop policy if exists "Collectors can read their own profile" on public.profiles;
+drop policy if exists "Collectors can read their own profile" on public.collector_profiles;
 create policy "Collectors can read their own profile"
-on public.profiles for select
+on public.collector_profiles for select
 using (auth.uid() = user_id);
 
 -- Only the shared ones, and only ever for reading.
-drop policy if exists "Anyone can read shared profiles" on public.profiles;
+drop policy if exists "Anyone can read shared profiles" on public.collector_profiles;
 create policy "Anyone can read shared profiles"
-on public.profiles for select
+on public.collector_profiles for select
 using (is_public);
 
-drop policy if exists "Collectors can create their profile" on public.profiles;
+drop policy if exists "Collectors can create their profile" on public.collector_profiles;
 create policy "Collectors can create their profile"
-on public.profiles for insert
+on public.collector_profiles for insert
 with check (auth.uid() = user_id);
 
-drop policy if exists "Collectors can update their profile" on public.profiles;
+drop policy if exists "Collectors can update their profile" on public.collector_profiles;
 create policy "Collectors can update their profile"
-on public.profiles for update
+on public.collector_profiles for update
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
-drop policy if exists "Collectors can delete their profile" on public.profiles;
+drop policy if exists "Collectors can delete their profile" on public.collector_profiles;
 create policy "Collectors can delete their profile"
-on public.profiles for delete
+on public.collector_profiles for delete
 using (auth.uid() = user_id);
 
 -- The public read surface. This view is the security boundary, not the cards
@@ -156,7 +166,7 @@ select
   case when p.show_values then c.current_value else null end as current_value,
   c.created_at
 from public.cards c
-join public.profiles p on p.user_id = c.user_id
+join public.collector_profiles p on p.user_id = c.user_id
 where c.visibility = 'public'
   and p.is_public;
 
@@ -287,7 +297,7 @@ as $$
   select exists (
     select 1
     from public.cards c
-    join public.profiles p on p.user_id = c.user_id
+    join public.collector_profiles p on p.user_id = c.user_id
     where p.is_public
       and c.visibility = 'public'
       and (c.front_image_path = object_name or c.back_image_path = object_name)

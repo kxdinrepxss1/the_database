@@ -65,6 +65,11 @@ shared, at all, by anyone.** A location plus a value describes what is worth
 stealing and where it is kept, so those columns are simply absent from the
 public view rather than filtered by policy.
 
+Collector profiles live in `collector_profiles`, not `profiles`. Supabase's own
+user-management quickstart creates a `public.profiles` table keyed on `id`, and
+sharing that name means `create table if not exists` quietly skips creation and
+then fails on the first policy referencing a column that table does not have.
+
 The boundary is `public_cards`, a view that runs as its owner and selects only
 the safe columns from cards belonging to shared profiles. Photos of shared
 cards become readable through a matching storage policy; every other photo

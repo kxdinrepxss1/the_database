@@ -19,17 +19,17 @@ do $$ begin
 end $$;
 
 grant usage on schema public, storage to authenticated, anon;
-grant select, insert, update, delete on public.cards, public.profiles to authenticated;
+grant select, insert, update, delete on public.cards, public.collector_profiles to authenticated;
 grant select on public.public_cards to authenticated, anon;
-grant select on public.profiles to anon;
+grant select on public.collector_profiles to anon;
 grant select on storage.objects to authenticated, anon;
 
 delete from public.cards where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
-delete from public.profiles where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
+delete from public.collector_profiles where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
 delete from storage.objects where bucket_id = 'card-photos';
 
 -- One collector shares; the other does not.
-insert into public.profiles (user_id, handle, display_name, is_public, show_values) values
+insert into public.collector_profiles (user_id, handle, display_name, is_public, show_values) values
   ('11111111-1111-1111-1111-111111111111', 'sharer', 'The Sharer', true, false),
   ('22222222-2222-2222-2222-222222222222', 'hidden', 'Stays Private', false, true);
 
@@ -105,7 +105,7 @@ end $$;
 
 select 'anon cannot read private profiles: ' ||
   case when count(*) = 0 then 'PASS' else 'FAIL' end
-from public.profiles where handle = 'hidden';
+from public.collector_profiles where handle = 'hidden';
 
 -- Photos: the shared card's image is reachable, the others are not.
 select 'anon can reach the shared card photo: ' ||
@@ -148,7 +148,7 @@ end $$;
 do $$
 declare changed int;
 begin
-  update public.profiles set is_public = true
+  update public.collector_profiles set is_public = true
    where user_id = '11111111-1111-1111-1111-111111111111';
   get diagnostics changed = row_count;
   if changed = 0 then
@@ -178,7 +178,7 @@ end $$;
 -- Claiming a handle already taken must fail rather than steal it.
 do $$
 begin
-  insert into public.profiles (user_id, handle, is_public)
+  insert into public.collector_profiles (user_id, handle, is_public)
   values ('22222222-2222-2222-2222-222222222222', 'sharer', true);
   raise notice 'handles cannot be duplicated: FAIL';
 exception when unique_violation then
@@ -190,7 +190,7 @@ end $$;
 reset role;
 
 -- === Turning sharing off takes everything back ===
-update public.profiles set is_public = false
+update public.collector_profiles set is_public = false
  where user_id = '11111111-1111-1111-1111-111111111111';
 
 set role anon;
@@ -204,7 +204,7 @@ from storage.objects where name = '11111111-1111-1111-1111-111111111111/shared-f
 reset role;
 
 -- === Opting in to values ===
-update public.profiles set is_public = true, show_values = true
+update public.collector_profiles set is_public = true, show_values = true
  where user_id = '11111111-1111-1111-1111-111111111111';
 
 set role anon;
@@ -216,7 +216,7 @@ reset role;
 -- Handle format is enforced, so a handle cannot be a path or a slur of symbols.
 do $$
 begin
-  insert into public.profiles (user_id, handle) values (gen_random_uuid(), 'has/slash');
+  insert into public.collector_profiles (user_id, handle) values (gen_random_uuid(), 'has/slash');
   raise notice 'malformed handles are rejected: FAIL';
 exception when check_violation then
   raise notice 'malformed handles are rejected: PASS';
