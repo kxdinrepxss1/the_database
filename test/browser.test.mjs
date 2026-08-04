@@ -571,6 +571,48 @@ const queued = (page) => page.evaluate(() =>
   await context.close();
 }
 
+// --- Sorting by value from the dropdown --------------------------------------
+{
+  const { context, page, errors } = await open("/collection");
+  const add = async (player, price) => {
+    await page.click("#addCard");
+    await page.fill('[name="player"]', player);
+    await page.fill('[name="year"]', "2024");
+    await page.fill('[name="set"]', "Topps");
+    if (price) await page.fill('[name="price"]', price);
+    await page.click(".submit-card");
+    await page.waitForTimeout(300);
+  };
+  await add("Cheap One", "5");
+  await add("Dear One", "500");
+  await add("Middling One", "50");
+  await add("Unpriced One", "");
+
+  const order = async () => (await page.locator(".card-info h3").allTextContents()).map((t) => t.trim());
+
+  check("the dropdown offers both value sorts",
+    await page.locator("#sort option").allTextContents(),
+    ["Recently added", "Player A–Z", "Value high to low", "Value low to high"]);
+
+  await page.selectOption("#sort", "Value high to low");
+  await page.waitForTimeout(250);
+  check("high to low orders by value", await order(),
+    ["Dear One", "Middling One", "Cheap One", "Unpriced One"]);
+
+  await page.selectOption("#sort", "Value low to high");
+  await page.waitForTimeout(250);
+  check("low to high orders by value", await order(),
+    ["Cheap One", "Middling One", "Dear One", "Unpriced One"]);
+
+  await page.selectOption("#sort", "Player A–Z");
+  await page.waitForTimeout(250);
+  check("the existing sorts still work", await order(),
+    ["Cheap One", "Dear One", "Middling One", "Unpriced One"]);
+
+  check("no errors while sorting", errors, []);
+  await context.close();
+}
+
 await browser.close();
 server.close();
 console.log(failed ? "\nFAILED" : "\nAll browser checks passed");
