@@ -84,6 +84,98 @@ create policy "Collectors can delete their cards"
 on public.cards for delete
 using (auth.uid() = user_id);
 
+-- Collector profiles. A profile exists only when someone chooses to share, and
+-- is_public is the master switch: nothing is visible publicly without it, no
+-- matter what individual cards say.
+create table if not exists public.profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  handle text unique,
+  display_name text,
+  is_public boolean not null default false,
+  show_values boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint profiles_handle_format
+    check (handle is null or handle ~ '^[a-z0-9][a-z0-9_-]{2,29}$')
+);
+
+drop trigger if exists profiles_touch_updated_at on public.profiles;
+create trigger profiles_touch_updated_at
+before update on public.profiles
+for each row execute function public.touch_updated_at();
+
+alter table public.profiles enable row level security;
+
+drop policy if exists "Collectors can read their own profile" on public.profiles;
+create policy "Collectors can read their own profile"
+on public.profiles for select
+using (auth.uid() = user_id);
+
+-- Only the shared ones, and only ever for reading.
+drop policy if exists "Anyone can read shared profiles" on public.profiles;
+create policy "Anyone can read shared profiles"
+on public.profiles for select
+using (is_public);
+
+drop policy if exists "Collectors can create their profile" on public.profiles;
+create policy "Collectors can create their profile"
+on public.profiles for insert
+with check (auth.uid() = user_id);
+
+drop policy if exists "Collectors can update their profile" on public.profiles;
+create policy "Collectors can update their profile"
+on public.profiles for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+drop policy if exists "Collectors can delete their profile" on public.profiles;
+create policy "Collectors can delete their profile"
+on public.profiles for delete
+using (auth.uid() = user_id);
+
+-- The public read surface. This view is the security boundary, not the cards
+-- table: it runs as its owner, so the WHERE clause here is what decides who can
+-- see what. Two rules are enforced by the column list rather than by policy,
+-- because row-level security cannot hide a column:
+--
+--   * storage_container / section / slot are NEVER exposed. Together with a
+--     value they would describe what is worth stealing and where it is kept.
+--   * purchase_price, purchase_date and notes are private business.
+--
+-- current_value appears only when the collector has opted in separately.
+drop view if exists public.public_cards;
+create view public.public_cards
+with (security_invoker = false) as
+select
+  c.id,
+  p.handle,
+  p.display_name,
+  c.player, c.year, c.sport, c.card_set, c.card_number,
+  c.team, c.parallel, c.grade, c.quantity,
+  c.front_image_path, c.back_image_path,
+  case when p.show_values then c.current_value else null end as current_value,
+  c.created_at
+from public.cards c
+join public.profiles p on p.user_id = c.user_id
+where c.visibility = 'public'
+  and p.is_public;
+
+-- Guarded so a missing role cannot abort the script and leave the schema
+-- half-applied. Supabase always has both.
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'grant select on public.public_cards to anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant select on public.public_cards to authenticated';
+  end if;
+end $$;
+
+create index if not exists cards_public_idx on public.cards (user_id) where visibility = 'public';
+create index if not exists cards_front_path_idx on public.cards (front_image_path);
+create index if not exists cards_back_path_idx on public.cards (back_image_path);
+
 -- Scan usage log. Backs the per-user daily cap enforced by /api/scan-card so a
 -- single account cannot run up the OpenAI bill.
 create table if not exists public.scan_events (
@@ -176,6 +268,47 @@ using (auth.uid() = user_id);
 insert into storage.buckets (id, name, public)
 values ('card-photos', 'card-photos', false)
 on conflict (id) do update set public = false;
+
+-- A photo becomes readable by anyone exactly when the card it belongs to is
+-- shared and its owner's profile is shared.
+--
+-- This has to go through a security-definer function. A subquery written
+-- directly into the policy runs with the caller's own privileges, so an
+-- anonymous visitor cannot see the cards row that would prove the photo is
+-- shareable, and every public photo is denied. The function answers one
+-- boolean about a path the caller already holds and reveals nothing else.
+create or replace function public.is_shared_card_photo(object_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.cards c
+    join public.profiles p on p.user_id = c.user_id
+    where p.is_public
+      and c.visibility = 'public'
+      and (c.front_image_path = object_name or c.back_image_path = object_name)
+  );
+$$;
+
+revoke all on function public.is_shared_card_photo(text) from public;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'grant execute on function public.is_shared_card_photo(text) to anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant execute on function public.is_shared_card_photo(text) to authenticated';
+  end if;
+end $$;
+
+drop policy if exists "Anyone can read photos of shared cards" on storage.objects;
+create policy "Anyone can read photos of shared cards"
+on storage.objects for select
+using (bucket_id = 'card-photos' and public.is_shared_card_photo(name));
 
 drop policy if exists "Collectors can read their card photos" on storage.objects;
 create policy "Collectors can read their card photos"

@@ -21,7 +21,7 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
@@ -47,7 +47,27 @@ async function supabase(req, url, body) {
       return [201, null];
     }
   }
+  if (url.pathname === "/rest/v1/profiles") {
+    if (req.method === "GET") {
+      const id = decodeURIComponent((url.search.match(/user_id=eq\.([^&]+)/) || [])[1] || "");
+      return [200, backend.profiles.filter((p) => p.user_id === id)];
+    }
+    if (req.method === "POST") {
+      const row = JSON.parse(body);
+      if (backend.takenHandles.includes(row.handle)) {
+        return [409, { message: 'duplicate key value violates unique constraint "profiles_handle_key"' }];
+      }
+      backend.profiles = backend.profiles.filter((p) => p.user_id !== row.user_id).concat(row);
+      return [201, [row]];
+    }
+  }
   if (url.pathname === "/rest/v1/cards") {
+    if (req.method === "PATCH") {
+      const patch = JSON.parse(body);
+      backend.cards = backend.cards.map((c) => ({ ...c, ...patch }));
+      backend.patches.push(patch);
+      return [204, null];
+    }
     if (req.method === "GET") return [200, backend.cards];
     if (req.method === "POST") {
       backend.writeAttempts++;
@@ -646,6 +666,108 @@ const queued = (page) => page.evaluate(() =>
     ["Cheap One", "Dear One", "Middling One", "Stacked One", "Unpriced One"]);
 
   check("no errors while sorting", errors, []);
+  await context.close();
+}
+
+// --- Opting in to a public showcase -----------------------------------------
+{
+  backend.cards = [
+    { id: "cccccccc-5555-4555-8555-555555555551", user_id: USER.id, player: "Aaron Judge",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1, visibility: "private" },
+    { id: "cccccccc-5555-4555-8555-555555555552", user_id: USER.id, player: "Juan Soto",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1, visibility: "public" },
+  ];
+  backend.profiles = []; backend.takenHandles = ["taken"]; backend.patches = [];
+  backend.snapshots = []; backend.noSnapshotTable = false;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1100 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e.message)));
+  await page.goto(origin + "/account");
+  await page.waitForTimeout(800);
+
+  // Nothing is shared until it is asked for.
+  check("sharing starts off", await page.locator("#sharePublic").isChecked(), false);
+  check("values start hidden", await page.locator("#shareValues").isChecked(), false);
+  check("no public link before opting in",
+    (await page.locator("#shareUrl").textContent()).trim(), "");
+
+  // A public collection needs a handle worth putting in a URL.
+  await page.check("#sharePublic");
+  await page.fill("#shareHandle", "no");
+  await page.click("#saveShare");
+  await page.waitForTimeout(300);
+  check("a too-short handle is refused",
+    (await page.locator("#shareMessage").textContent()).includes("3 to 30"), true);
+  check("nothing was saved", backend.profiles.length, 0);
+
+  await page.fill("#shareHandle", "has spaces");
+  await page.click("#saveShare");
+  await page.waitForTimeout(300);
+  check("a handle with spaces is refused", backend.profiles.length, 0);
+
+  // A handle someone else already holds must fail cleanly, not silently.
+  await page.fill("#shareHandle", "taken");
+  await page.click("#saveShare");
+  await page.waitForTimeout(400);
+  check("a taken handle is reported plainly",
+    (await page.locator("#shareMessage").textContent()).includes("already taken"), true);
+
+  await page.fill("#shareHandle", "kadin");
+  await page.fill("#shareName", "Kadin R");
+  await page.click("#saveShare");
+  await page.waitForTimeout(500);
+  check("the profile is saved", backend.profiles.length, 1);
+  check("it is marked public", backend.profiles[0].is_public, true);
+  check("values stay opted out", backend.profiles[0].show_values, false);
+  check("the public link is shown",
+    (await page.locator("#shareUrl").textContent()).includes("/c/kadin"), true);
+
+  // Bulk sharing goes out as one request, not one per card.
+  await page.click("#shareAll");
+  await page.waitForTimeout(400);
+  check("sharing every card is a single request", backend.patches.length, 1);
+  check("it marks them public", backend.patches[0].visibility, "public");
+
+  await page.click("#shareNone");
+  await page.waitForTimeout(400);
+  check("unsharing is also one request", backend.patches.length, 2);
+  check("it marks them private", backend.patches[1].visibility, "private");
+
+  check("no errors across the sharing flow", errors, []);
+  await context.close();
+}
+
+// A card's own shared flag round-trips through the form.
+{
+  backend.cards = []; backend.profiles = []; backend.patches = [];
+  const { context, page, errors } = await open("/collection");
+  await page.click("#addCard");
+  check("cards are not shared by default",
+    await page.locator('[name="shared"]').isChecked(), false);
+  await page.fill('[name="player"]', "Shared Card");
+  await page.fill('[name="year"]', "2024");
+  await page.fill('[name="set"]', "Topps");
+  await page.check('[name="shared"]');
+  await page.click(".submit-card");
+  await page.waitForTimeout(400);
+  check("the shared flag is stored on the card", await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("the-database-cards"))[0].shared), true);
+
+  await page.click(".catalog-card");
+  await page.waitForTimeout(250);
+  await page.click(".edit-card");
+  await page.waitForTimeout(250);
+  check("editing shows the card as shared",
+    await page.locator('[name="shared"]').isChecked(), true);
+  check("no errors on the card sharing path", errors, []);
   await context.close();
 }
 
