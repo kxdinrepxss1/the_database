@@ -51,8 +51,11 @@ check("warning markup exists", html.includes('id="duplicateWarning"'), true);
 
 // --- Ordering ---
 // "Recently added" previously sorted on a random UUID, so ordering was arbitrary.
-const sortSrc = slice("if(sort==='Player A–Z')", "$('#count')");
-const sortList = new Function("list", "sort", sortSrc + "; return list;");
+const sortSrc = slice("const VALUE_SORTS", "$('#count')");
+const sortList = new Function("list", "sort", "cardPrice", "qty", sortSrc + "; return list;");
+const cardPrice = (c) => (Number(c.currentValue) > 0 ? Number(c.currentValue) : null);
+const qty = (c) => Math.max(1, Number(c.quantity) || 1);
+const bySort = (list, sort) => sortList(list.slice(), sort, cardPrice, qty).map((c) => c.player);
 
 const cardsByDate = [
   { id: "zzz", player: "Oldest", createdAt: "2026-07-01T10:00:00Z" },
@@ -60,9 +63,9 @@ const cardsByDate = [
   { id: "mmm", player: "Middle", createdAt: "2026-07-15T10:00:00Z" },
 ];
 check("recently added is newest first",
-  sortList(cardsByDate.slice(), "Recently added").map((c) => c.player), ["Newest", "Middle", "Oldest"]);
+  bySort(cardsByDate, "Recently added"), ["Newest", "Middle", "Oldest"]);
 check("player sort is alphabetical",
-  sortList(cardsByDate.slice(), "Player A–Z").map((c) => c.player), ["Middle", "Newest", "Oldest"]);
+  bySort(cardsByDate, "Player A–Z"), ["Middle", "Newest", "Oldest"]);
 
 // Cards predating the createdAt field must still sort deterministically.
 const legacy = [
@@ -71,11 +74,55 @@ const legacy = [
   { id: "222", player: "Legacy B" },
 ];
 check("cards without a date fall back to id order",
-  sortList(legacy.slice(), "Recently added").map((c) => c.player), ["Legacy C", "Legacy B", "Legacy A"]);
+  bySort(legacy, "Recently added"), ["Legacy C", "Legacy B", "Legacy A"]);
 
 // The database creation time has to survive the trip into the client.
 check("createdAt is read from the row", script.includes("createdAt:r.created_at||''"), true);
 check("new cards get a creation time", script.includes("createdAt:editing?(c.createdAt||''):new Date().toISOString()"), true);
+
+// --- Value sorting ---
+// Sorts on the figure shown on the card, which is price times quantity.
+const valued = [
+  { id: "1", player: "Cheap", currentValue: 5, quantity: 1 },
+  { id: "2", player: "Dear", currentValue: 500, quantity: 1 },
+  { id: "3", player: "Middling", currentValue: 50, quantity: 1 },
+  { id: "4", player: "Unpriced", quantity: 1 },
+];
+check("card value high to low", bySort(valued, "Card value, high to low"),
+  ["Dear", "Middling", "Cheap", "Unpriced"]);
+check("card value low to high", bySort(valued, "Card value, low to high"),
+  ["Cheap", "Middling", "Dear", "Unpriced"]);
+check("total value high to low", bySort(valued, "Total value, high to low"),
+  ["Dear", "Middling", "Cheap", "Unpriced"]);
+check("total value low to high", bySort(valued, "Total value, low to high"),
+  ["Cheap", "Middling", "Dear", "Unpriced"]);
+
+// Unpriced cards sink in every direction: a "low to high" list opening with
+// everything unpriced answers nobody's question.
+for (const mode of ["Card value, low to high", "Total value, low to high"]) {
+  check(`unpriced cards stay last (${mode})`, bySort(valued, mode).at(-1), "Unpriced");
+}
+
+// The two families differ precisely on quantity, which is the point of having both.
+const stacks = [
+  { id: "1", player: "One at fifty", currentValue: 50, quantity: 1 },
+  { id: "2", player: "Ten at ten", currentValue: 10, quantity: 10 },
+];
+check("card value ignores quantity", bySort(stacks, "Card value, high to low"),
+  ["One at fifty", "Ten at ten"]);
+check("total value counts the stack", bySort(stacks, "Total value, high to low"),
+  ["Ten at ten", "One at fifty"]);
+
+// Ties fall back to the player name so the order does not jump around.
+const ties = [
+  { id: "1", player: "Zeta", currentValue: 20, quantity: 1 },
+  { id: "2", player: "Alpha", currentValue: 20, quantity: 1 },
+];
+check("equal values break the tie by name", bySort(ties, "Card value, high to low"),
+  ["Alpha", "Zeta"]);
+check("a collection with no prices still sorts",
+  bySort([{ id: "1", player: "Beta" }, { id: "2", player: "Alpha" }], "Card value, high to low"),
+  ["Alpha", "Beta"]);
 
 // --- Currency formatting ---
 // Negative amounts previously rendered as "$-500.00". Profit and growth both
