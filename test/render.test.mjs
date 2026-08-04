@@ -6,7 +6,7 @@ const env = {
   SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
 };
 
-const routes = ["/", "/collection", "/pricing", "/scan", "/account", "/reset-password"];
+const routes = ["/", "/collection", "/scan", "/account", "/reset-password"];
 let failed = false;
 
 for (const route of routes) {
@@ -31,7 +31,9 @@ for (const route of routes) {
 }
 
 // Non-page routes
-for (const [path, expect] of [["/manifest.webmanifest", 200], ["/sw.js", 200], ["/nope", 404]]) {
+// /pricing was replaced by inline pricing; keep it pointing somewhere useful
+// for anyone holding a bookmark or a cached service-worker entry.
+for (const [path, expect] of [["/manifest.webmanifest", 200], ["/sw.js", 200], ["/nope", 404], ["/pricing", 302]]) {
   const res = await worker.fetch(new Request("https://x" + path), env);
   const label = res.status === expect ? "ok  " : "FAIL";
   if (res.status !== expect) failed = true;
