@@ -590,24 +590,44 @@ const queued = (page) => page.evaluate(() =>
 
   const order = async () => (await page.locator(".card-info h3").allTextContents()).map((t) => t.trim());
 
-  check("the dropdown offers both value sorts",
+  check("the dropdown offers both families of value sort",
     await page.locator("#sort option").allTextContents(),
-    ["Recently added", "Player A–Z", "Value high to low", "Value low to high"]);
+    ["Recently added", "Player A–Z", "Card value, high to low", "Card value, low to high",
+     "Total value, high to low", "Total value, low to high"]);
 
-  await page.selectOption("#sort", "Value high to low");
+  await page.selectOption("#sort", "Card value, high to low");
   await page.waitForTimeout(250);
-  check("high to low orders by value", await order(),
+  check("card value high to low", await order(),
     ["Dear One", "Middling One", "Cheap One", "Unpriced One"]);
 
-  await page.selectOption("#sort", "Value low to high");
+  await page.selectOption("#sort", "Card value, low to high");
   await page.waitForTimeout(250);
-  check("low to high orders by value", await order(),
+  check("card value low to high", await order(),
     ["Cheap One", "Middling One", "Dear One", "Unpriced One"]);
+
+  // A stack of cheap cards should outrank a single dear one only by total.
+  await page.click("#addCard");
+  await page.fill('[name="player"]', "Stacked One");
+  await page.fill('[name="year"]', "2024");
+  await page.fill('[name="set"]', "Topps");
+  await page.fill('[name="quantity"]', "20");
+  await page.fill('[name="price"]', "100");
+  await page.click(".submit-card");
+  await page.waitForTimeout(350);
+
+  await page.selectOption("#sort", "Card value, high to low");
+  await page.waitForTimeout(250);
+  check("by card value the stack sits below the dearest single card",
+    (await order()).slice(0, 2), ["Dear One", "Stacked One"]);
+
+  await page.selectOption("#sort", "Total value, high to low");
+  await page.waitForTimeout(250);
+  check("by total value the stack comes first", (await order())[0], "Stacked One");
 
   await page.selectOption("#sort", "Player A–Z");
   await page.waitForTimeout(250);
   check("the existing sorts still work", await order(),
-    ["Cheap One", "Dear One", "Middling One", "Unpriced One"]);
+    ["Cheap One", "Dear One", "Middling One", "Stacked One", "Unpriced One"]);
 
   check("no errors while sorting", errors, []);
   await context.close();

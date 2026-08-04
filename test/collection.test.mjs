@@ -51,7 +51,7 @@ check("warning markup exists", html.includes('id="duplicateWarning"'), true);
 
 // --- Ordering ---
 // "Recently added" previously sorted on a random UUID, so ordering was arbitrary.
-const sortSrc = slice("if(sort==='Player A–Z')", "$('#count')");
+const sortSrc = slice("const VALUE_SORTS", "$('#count')");
 const sortList = new Function("list", "sort", "cardPrice", "qty", sortSrc + "; return list;");
 const cardPrice = (c) => (Number(c.currentValue) > 0 ? Number(c.currentValue) : null);
 const qty = (c) => Math.max(1, Number(c.quantity) || 1);
@@ -88,32 +88,40 @@ const valued = [
   { id: "3", player: "Middling", currentValue: 50, quantity: 1 },
   { id: "4", player: "Unpriced", quantity: 1 },
 ];
-check("value high to low", bySort(valued, "Value high to low"),
+check("card value high to low", bySort(valued, "Card value, high to low"),
   ["Dear", "Middling", "Cheap", "Unpriced"]);
-check("value low to high", bySort(valued, "Value low to high"),
+check("card value low to high", bySort(valued, "Card value, low to high"),
   ["Cheap", "Middling", "Dear", "Unpriced"]);
-// Unpriced cards sink either way: a "low to high" list opening with everything
-// unpriced answers nobody's question.
-check("unpriced cards stay last in both directions",
-  bySort(valued, "Value low to high").at(-1), "Unpriced");
+check("total value high to low", bySort(valued, "Total value, high to low"),
+  ["Dear", "Middling", "Cheap", "Unpriced"]);
+check("total value low to high", bySort(valued, "Total value, low to high"),
+  ["Cheap", "Middling", "Dear", "Unpriced"]);
 
-// Per-card value, so a stack of cheap cards does not outrank a single dear one.
+// Unpriced cards sink in every direction: a "low to high" list opening with
+// everything unpriced answers nobody's question.
+for (const mode of ["Card value, low to high", "Total value, low to high"]) {
+  check(`unpriced cards stay last (${mode})`, bySort(valued, mode).at(-1), "Unpriced");
+}
+
+// The two families differ precisely on quantity, which is the point of having both.
 const stacks = [
   { id: "1", player: "One at fifty", currentValue: 50, quantity: 1 },
   { id: "2", player: "Ten at ten", currentValue: 10, quantity: 10 },
 ];
-check("quantity does not inflate a card's position", bySort(stacks, "Value high to low"),
+check("card value ignores quantity", bySort(stacks, "Card value, high to low"),
   ["One at fifty", "Ten at ten"]);
+check("total value counts the stack", bySort(stacks, "Total value, high to low"),
+  ["Ten at ten", "One at fifty"]);
 
 // Ties fall back to the player name so the order does not jump around.
 const ties = [
   { id: "1", player: "Zeta", currentValue: 20, quantity: 1 },
   { id: "2", player: "Alpha", currentValue: 20, quantity: 1 },
 ];
-check("equal values break the tie by name", bySort(ties, "Value high to low"),
+check("equal values break the tie by name", bySort(ties, "Card value, high to low"),
   ["Alpha", "Zeta"]);
 check("a collection with no prices still sorts",
-  bySort([{ id: "1", player: "Beta" }, { id: "2", player: "Alpha" }], "Value high to low"),
+  bySort([{ id: "1", player: "Beta" }, { id: "2", player: "Alpha" }], "Card value, high to low"),
   ["Alpha", "Beta"]);
 
 // --- Currency formatting ---
