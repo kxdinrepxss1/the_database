@@ -97,13 +97,13 @@ check("value low to high", bySort(valued, "Value low to high"),
 check("unpriced cards stay last in both directions",
   bySort(valued, "Value low to high").at(-1), "Unpriced");
 
-// Quantity counts, because the card shows the total.
+// Per-card value, so a stack of cheap cards does not outrank a single dear one.
 const stacks = [
   { id: "1", player: "One at fifty", currentValue: 50, quantity: 1 },
   { id: "2", player: "Ten at ten", currentValue: 10, quantity: 10 },
 ];
-check("quantity is part of the value", bySort(stacks, "Value high to low"),
-  ["Ten at ten", "One at fifty"]);
+check("quantity does not inflate a card's position", bySort(stacks, "Value high to low"),
+  ["One at fifty", "Ten at ten"]);
 
 // Ties fall back to the player name so the order does not jump around.
 const ties = [
