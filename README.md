@@ -50,6 +50,30 @@ both `/` and `,` as separators — cloud collections by `setup.sql`, device
 collections on load. The original text is kept rather than dropped, so a wrong
 split can always be traced back to what was typed.
 
+## Sharing a collection
+
+Nothing is public by default, and three independent switches have to line up:
+
+1. **The profile switch.** A collector picks a handle and turns sharing on.
+   Without it nothing is visible, whatever individual cards say.
+2. **The card switch.** Each card is marked shared or not. Bulk actions on the
+   account page set all of them at once.
+3. **Values.** A separate opt-in. Prices stay hidden unless it is on.
+
+**Storage locations, purchase prices, purchase dates and notes are never
+shared, at all, by anyone.** A location plus a value describes what is worth
+stealing and where it is kept, so those columns are simply absent from the
+public view rather than filtered by policy.
+
+The boundary is `public_cards`, a view that runs as its owner and selects only
+the safe columns from cards belonging to shared profiles. Photos of shared
+cards become readable through a matching storage policy; every other photo
+stays closed. Turning the profile switch off closes both again immediately.
+
+`supabase/tests/sharing.test.sql` attacks this from the outside — as an
+anonymous visitor and as a signed-in stranger — and every check passes only
+when the attempt fails.
+
 ## How saving works
 
 When signed in, every change is written to a local outbox before it is sent.
