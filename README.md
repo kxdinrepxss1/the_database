@@ -5,7 +5,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - collector accounts through Supabase
 - private cloud-synced collections
 - front and back card photos
-- manual card entry, editing, pricing, and removal
+- manual card entry, editing, and removal, with prices set inline on the grid
 - structured storage locations, so a card can actually be found again
 - AI-assisted card recognition from a photo, reviewed before anything is saved
 - search and filtering

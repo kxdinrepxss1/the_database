@@ -131,7 +131,7 @@ async function open(route) {
 }
 
 // Every route must load clean.
-for (const route of ["/", "/collection", "/pricing", "/scan", "/account", "/reset-password"]) {
+for (const route of ["/", "/collection", "/scan", "/account", "/reset-password"]) {
   const { context, page, errors } = await open(route);
   check(`${route} loads without errors`, errors, []);
   await context.close();
@@ -187,9 +187,9 @@ for (const route of ["/", "/collection", "/pricing", "/scan", "/account", "/rese
   await context.close();
 }
 
-// The pricing page must read and write the card's own price.
+// Pricing now happens inline on the collection grid.
 {
-  const { context, page, errors } = await open("/pricing");
+  const { context, page, errors } = await open("/collection");
   await page.evaluate(() => {
     localStorage.setItem("the-database-cards", JSON.stringify([{
       id: "11111111-1111-4111-8111-111111111111", player: "Aaron Judge", year: "2024",
@@ -199,13 +199,29 @@ for (const route of ["/", "/collection", "/pricing", "/scan", "/account", "/rese
   });
   await page.reload();
   await page.waitForTimeout(400);
-  check("existing price loads into the pricing input",
+
+  check("prices are not editable until asked for",
+    await page.locator("[data-price-id]").count(), 0);
+  await page.click("#priceMode");
+  await page.waitForTimeout(250);
+  check("existing price loads into the inline input",
     await page.locator("[data-price-id]").first().inputValue(), "10");
+
   await page.fill("[data-price-id]", "25");
-  await page.click("[data-save-id]");
+  await page.locator("[data-price-id]").blur();
   await page.waitForTimeout(300);
   check("edited price is written to the card", await page.evaluate(() =>
     JSON.parse(localStorage.getItem("the-database-cards"))[0].currentValue), 25);
+  // Typing in the price box must not open the card detail modal.
+  check("the card modal did not open", await page.locator("#backdrop.open").count(), 0);
+  // Totals should follow without the grid re-rendering underneath the input.
+  check("the collection total follows the edit",
+    (await page.locator("#portfolio").textContent()).trim(), "$25.00");
+
+  await page.click("#priceMode");
+  await page.waitForTimeout(250);
+  check("leaving price mode restores the display",
+    (await page.locator(".price-tag strong").first().textContent()).trim(), "$25.00");
   check("no errors on the pricing path", errors, []);
   await context.close();
 }
@@ -565,7 +581,7 @@ const queued = (page) => page.evaluate(() =>
 
   // Revisiting must reuse the cache rather than re-signing everything.
   const before = backend.signCalls;
-  await page.goto(origin + "/pricing");
+  await page.goto(origin + "/account");
   await page.waitForTimeout(900);
   check("navigating does not re-sign photos", backend.signCalls - before, 0);
   await context.close();
