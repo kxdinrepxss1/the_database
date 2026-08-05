@@ -1,7 +1,7 @@
 // Single source of truth for the build. Names the service-worker cache and is
 // stamped onto error reports so a report can be tied to the code that produced
 // it. Bump it whenever the client script changes.
-const VERSION = "v27";
+const VERSION = "v28";
 
 const page = (route, env, handle = "") => `<!doctype html>
 <html lang="en">
@@ -156,9 +156,15 @@ const page = (route, env, handle = "") => `<!doctype html>
       render();
     }
     async function signedPhoto(path){if(!path)return null;let d=await sb('/storage/v1/object/sign/card-photos/'+path,{method:'POST',body:JSON.stringify({expiresIn:7200})});return SUPABASE_URL+'/storage/v1'+d.signedURL}
-    async function loadCloudCards(){let rows=await sb('/rest/v1/cards?select=*&order=created_at.desc'),loaded=rows.map(rowToCard);loaded.forEach(c=>{c.photo=cachedSignedUrl(c.frontImagePath);c.photoBack=cachedSignedUrl(c.backImagePath)});customCards=loaded;cards=customCards;render();refreshSets();updateTotals();await attachPhotos(loaded)}
+    // The user_id filter is deliberate belt and braces. Row-level security is
+    // what actually keeps collections apart, but policies are OR'd together, so
+    // one stray permissive policy in the project would hand this query every
+    // collector's cards and the app would paint them into your collection as if
+    // they were yours. Asking only for your own rows means a database mistake
+    // shows up as missing cards rather than as somebody else's.
+    async function loadCloudCards(){let rows=await sb('/rest/v1/cards?select=*&order=created_at.desc&user_id=eq.'+encodeURIComponent(session.user.id)),loaded=rows.map(rowToCard);loaded.forEach(c=>{c.photo=cachedSignedUrl(c.frontImagePath);c.photoBack=cachedSignedUrl(c.backImagePath)});customCards=loaded;cards=customCards;render();refreshSets();updateTotals();await attachPhotos(loaded)}
     async function deleteStoredPhoto(path){if(!path)return;try{await fetch(SUPABASE_URL+'/storage/v1/object/card-photos/'+path,{method:'DELETE',headers:authHeaders()})}catch(e){}}
-    async function deleteCloudCard(c){if(!session)return;await sb('/rest/v1/cards?id=eq.'+encodeURIComponent(c.id),{method:'DELETE'});await deleteStoredPhoto(c.frontImagePath);await deleteStoredPhoto(c.backImagePath)}
+    async function deleteCloudCard(c){if(!session)return;await sb('/rest/v1/cards?id=eq.'+encodeURIComponent(c.id)+'&user_id=eq.'+encodeURIComponent(session.user.id),{method:'DELETE'});await deleteStoredPhoto(c.frontImagePath);await deleteStoredPhoto(c.backImagePath)}
     async function refreshPhotoUrls(){if(!session)return;try{[...new Set(customCards.flatMap(c=>[c.frontImagePath,c.backImagePath]).filter(Boolean))].forEach(p=>{delete signedCache[p]});saveSignedCache();await attachPhotos(customCards)}catch(e){}}
     // ---- Value history ---------------------------------------------------
     // Kept server-side so the growth chart follows a collector between devices.
@@ -181,7 +187,7 @@ const page = (route, env, handle = "") => `<!doctype html>
     async function loadCloudHistory(){
       if(!session)return;
       try{
-      let rows=await sb('/rest/v1/collection_snapshots?select=total,created_at&order=created_at.asc&limit='+SNAPSHOT_LIMIT);
+      let rows=await sb('/rest/v1/collection_snapshots?select=total,created_at&order=created_at.asc&user_id=eq.'+encodeURIComponent(session.user.id)+'&limit='+SNAPSHOT_LIMIT);
       // First sign-in on a device that already has a chart: carry it up rather
       // than throwing away history the collector can see today.
       if(!rows.length&&valueHistory.length){

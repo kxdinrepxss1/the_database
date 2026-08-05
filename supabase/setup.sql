@@ -409,6 +409,71 @@ using (
 );
 
 -- ---------------------------------------------------------------------------
+-- Removing policies this script did not write.
+--
+-- Row-level security policies are OR'd together, not AND'd. One extra policy
+-- reading "using (true)" therefore cancels every rule above it: the table is
+-- open to anyone signed in, and nothing here would say so. Generated starter
+-- schemas hand out exactly that policy under names like "Enable read access
+-- for all users", and dropping the ones this script defines by name never
+-- touches it, so it survives every re-run.
+--
+-- These tables belong to this script, so a policy on them that is not in the
+-- list below is not part of the design and is removed. Each removal is named,
+-- because silently deleting somebody's policy would be its own kind of trap.
+-- Only storage policies that mention the card-photos bucket are considered --
+-- other buckets are none of our business.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  rec record;
+  removed text[] := '{}';
+begin
+  for rec in
+    select p.schemaname, p.tablename, p.policyname
+    from pg_policies p
+    where (
+        (p.schemaname = 'public'
+         and p.tablename in ('cards','collector_profiles','scan_events',
+                             'collection_snapshots','error_events'))
+        or (p.schemaname = 'storage' and p.tablename = 'objects'
+            and coalesce(p.qual, '') || coalesce(p.with_check, '') like '%card-photos%')
+      )
+      and p.policyname not in (
+        'Collectors can read their cards',
+        'Collectors can add their cards',
+        'Collectors can update their cards',
+        'Collectors can delete their cards',
+        'Collectors can read their own profile',
+        'Anyone can read shared profiles',
+        'Collectors can create their profile',
+        'Collectors can update their profile',
+        'Collectors can delete their profile',
+        'Collectors can read their scan history',
+        'Collectors can record their scans',
+        'Collectors can read their value history',
+        'Collectors can record their value history',
+        'Collectors can clear their value history',
+        'Collectors can record their errors',
+        'Collectors can read their errors',
+        'Anyone can read photos of shared cards',
+        'Collectors can read their card photos',
+        'Collectors can upload their card photos',
+        'Collectors can update their card photos',
+        'Collectors can delete their card photos'
+      )
+  loop
+    execute format('drop policy %I on %I.%I', rec.policyname, rec.schemaname, rec.tablename);
+    removed := removed || format('%s.%s: "%s"', rec.schemaname, rec.tablename, rec.policyname);
+  end loop;
+
+  if array_length(removed, 1) is not null then
+    raise notice E'setup.sql removed % access rule(s) it did not define:\n  %\nThese sat alongside the rules above and could widen who sees a collection.',
+      array_length(removed, 1), array_to_string(removed, E'\n  ');
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Verification.
 --
 -- Everything above uses "create ... if not exists", which is idempotent but
@@ -469,6 +534,27 @@ begin
       and policyname = 'Anyone can read photos of shared cards'
   ) then
     problems := problems || 'missing storage policy: Anyone can read photos of shared cards';
+  end if;
+
+  -- Policies only apply where row-level security is switched on. With it off
+  -- the table is simply open, and every rule above becomes decoration.
+  for rec in
+    select unnest(array['cards','collector_profiles','scan_events',
+                        'collection_snapshots','error_events']) as relname
+  loop
+    if not exists (
+      select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relname = rec.relname and c.relrowsecurity
+    ) then
+      problems := problems || format('row-level security is off on public.%s', rec.relname);
+    end if;
+  end loop;
+
+  if not exists (
+    select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'storage' and c.relname = 'objects' and c.relrowsecurity
+  ) then
+    problems := problems || 'row-level security is off on storage.objects, so every card photo is readable';
   end if;
 
   if array_length(problems, 1) is not null then

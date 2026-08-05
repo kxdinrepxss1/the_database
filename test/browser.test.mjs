@@ -21,7 +21,7 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
@@ -98,7 +98,14 @@ async function supabase(req, url, body) {
       backend.patches.push(patch);
       return [204, null];
     }
-    if (req.method === "GET") return [200, backend.cards];
+    if (req.method === "GET") {
+      backend.cardQueries.push(url.search);
+      // PostgREST applies the filters it is given, so this mock does too. A
+      // client that stops asking for its own rows gets everybody's, which is
+      // exactly the failure this reproduces.
+      const owner = decodeURIComponent((url.search.match(/user_id=eq\.([^&]+)/) || [])[1] || "");
+      return [200, owner ? backend.cards.filter((c) => c.user_id === owner) : backend.cards];
+    }
     if (req.method === "POST") {
       backend.writeAttempts++;
       if (backend.failWrites) return [500, { message: "backend unavailable" }];
@@ -570,7 +577,8 @@ const queued = (page) => page.evaluate(() =>
 
 // Deploying without re-running setup.sql must not look like a data problem.
 {
-  backend.cards = [{ id: "dddddddd-3333-4333-8333-333333333333", player: "Aaron Judge",
+  backend.cards = [{ id: "dddddddd-3333-4333-8333-333333333333", user_id: USER.id,
+    player: "Aaron Judge",
     year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1 }];
   backend.snapshots = []; backend.failWrites = false; backend.noSnapshotTable = true;
 
@@ -923,6 +931,53 @@ const PUBLIC_ROWS = [
   check("it does not claim the collector is missing",
     (await page.locator("#showcaseEmptyText").textContent()).includes("not shared any cards"), true);
   check("no errors on an unknown handle", errors, []);
+  await context.close();
+}
+
+// --- A collection must never contain somebody else's cards -------------------
+// Row-level security is what keeps collectors apart, but policies are OR'd
+// together: one stray permissive policy in the project and this query comes
+// back with everybody's rows. A tester saw exactly that — another collector's
+// cards, purchase prices included, sitting in his own collection. The client
+// asks only for its own rows so a database mistake cannot paint them in.
+{
+  backend.cards = [
+    { id: "eeeeeeee-6666-4666-8666-666666666661", user_id: USER.id, player: "My Own Card",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1,
+      current_value: 10 },
+    { id: "eeeeeeee-6666-4666-8666-666666666662", user_id: "99999999-9999-4999-8999-999999999999",
+      player: "Somebody Elses Card", year: 2024, card_set: "Topps", parallel: "Base",
+      grade: "Raw", quantity: 1, current_value: 1426, purchase_price: 575.5,
+      storage_container: "Their Binder", notes: "their private note" },
+  ];
+  backend.snapshots = []; backend.failWrites = false; backend.noSnapshotTable = false;
+  backend.cardQueries = [];
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/collection`);
+  await page.waitForFunction(() => document.querySelectorAll("#grid .catalog-card").length > 0);
+
+  check("the collection asks only for its owner's rows",
+    backend.cardQueries.every((q) => q.includes(`user_id=eq.${USER.id}`)), true);
+  check("only the collector's own card is shown",
+    await page.locator("#grid .catalog-card").count(), 1);
+  const grid = await page.locator("#grid").innerHTML();
+  check("another collector's card is not in the collection",
+    grid.includes("Somebody Elses Card"), false);
+  check("their storage location never arrives", grid.includes("Their Binder"), false);
+  // The header total is what the tester actually noticed: a value that was not his.
+  check("the total counts only the collector's own cards",
+    (await page.locator("#count").textContent()).includes("1"), true);
+  check("no errors while loading the collection", errors, []);
   await context.close();
 }
 
