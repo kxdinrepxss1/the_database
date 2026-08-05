@@ -222,6 +222,19 @@ begin
 end $$;
 
 create index if not exists cards_public_idx on public.cards (user_id) where visibility = 'public';
+
+-- Discovery search runs ilike '%term%' across a few columns, which no ordinary
+-- index can serve. Trigram indexes can. Guarded because the extension may not
+-- be available everywhere, and search is merely slower without them.
+do $$
+begin
+  create extension if not exists pg_trgm;
+  execute 'create index if not exists cards_player_trgm_idx on public.cards using gin (player gin_trgm_ops)';
+  execute 'create index if not exists cards_set_trgm_idx on public.cards using gin (card_set gin_trgm_ops)';
+  execute 'create index if not exists cards_team_trgm_idx on public.cards using gin (team gin_trgm_ops)';
+exception when others then
+  raise notice 'pg_trgm unavailable; discovery search will work but scan more rows.';
+end $$;
 create index if not exists cards_front_path_idx on public.cards (front_image_path);
 create index if not exists cards_back_path_idx on public.cards (back_image_path);
 

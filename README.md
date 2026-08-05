@@ -8,7 +8,8 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - manual card entry, editing, and removal, with prices set inline on the grid
 - structured storage locations, so a card can actually be found again
 - AI-assisted card recognition from a photo, reviewed before anything is saved
-- search and filtering
+- search and filtering, plus discovery search across shared collections
+- public showcase pages, opt-in and off by default
 - collection value, cost, profit, and growth tracking
 - one-click export of the whole collection, photos included
 - install-to-home-screen support
@@ -89,6 +90,17 @@ The boundary is `public_cards`, a view that runs as its owner and selects only
 the safe columns from cards belonging to shared profiles. Photos of shared
 cards become readable through a matching storage policy; every other photo
 stays closed. Turning the profile switch off closes both again immediately.
+
+Two pages read that view and nothing else. **/search** finds shared cards
+across every collector who has opted in; **/c/&lt;handle&gt;** is one collector's
+showcase. Both work signed out. An unknown handle and a collector who has
+shared nothing look identical from outside, deliberately — neither confirms the
+other exists.
+
+Search terms are reduced to letters, digits, spaces and hyphens before they
+reach the query. PostgREST filters are their own small language, and a
+whitelist is the only shape that reliably keeps a search term from becoming
+part of it.
 
 `supabase/tests/sharing.test.sql` attacks this from the outside — as an
 anonymous visitor and as a signed-in stranger — and every check passes only
