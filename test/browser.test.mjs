@@ -21,7 +21,7 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
@@ -53,6 +53,11 @@ async function supabase(req, url, body) {
     const or = (url.search.match(/or=\(([^)]*)\)/) || [])[1] || "";
     let rows = backend.publicCards;
     if (handle) rows = rows.filter((r) => r.handle === decodeURIComponent(handle));
+    const inList = (url.search.match(/handle=in\.\(([^)]*)\)/) || [])[1];
+    if (inList) {
+      const wanted = decodeURIComponent(inList).replace(/"/g, "").split(",");
+      rows = rows.filter((r) => wanted.includes(r.handle));
+    }
     if (or) {
       // Mirror PostgREST's ilike well enough to prove the filter is applied.
       const term = decodeURIComponent((or.match(/player\.ilike\.([^,]*)/) || [])[1] || "").replace(/\*/g, "").toLowerCase();
@@ -63,6 +68,17 @@ async function supabase(req, url, body) {
   }
   if (url.pathname === "/rest/v1/collector_profiles") {
     if (req.method === "GET") {
+      if (url.search.includes("is_public=eq.true")) {
+        backend.collectorQueries.push(url.search);
+        let rows = backend.publicProfiles;
+        const or = (url.search.match(/or=\(([^)]*)\)/) || [])[1] || "";
+        if (or) {
+          const term = decodeURIComponent((or.match(/handle\.ilike\.([^,]*)/) || [])[1] || "")
+            .replace(/\*/g, "").toLowerCase();
+          rows = rows.filter((p) => (p.handle + " " + (p.display_name || "")).toLowerCase().includes(term));
+        }
+        return [200, rows];
+      }
       const id = decodeURIComponent((url.search.match(/user_id=eq\.([^&]+)/) || [])[1] || "");
       return [200, backend.profiles.filter((p) => p.user_id === id)];
     }
@@ -806,24 +822,56 @@ const PUBLIC_ROWS = [
 // The search page, signed out, which is how most visitors will arrive.
 {
   backend.publicCards = PUBLIC_ROWS; backend.publicQueries = []; backend.signCalls = 0;
+  backend.collectorQueries = [];
+  backend.publicProfiles = [
+    { handle: "kadin", display_name: "Kadin R" },
+    { handle: "someone", display_name: "Someone Else" },
+  ];
   const { context, page, errors } = await open("/search");
 
-  check("nothing is queried before a term is typed",
-    backend.publicQueries.length, 0);
-  check("the empty state invites a search",
-    (await page.locator("#publicEmptyText").textContent()).includes("to begin"), true);
+  // The page is a directory before it is a search box: an empty discovery page
+  // tells a visitor there is nothing here.
+  check("collectors are listed before anything is typed",
+    await page.locator(".collector-card").count(), 2);
+  check("the heading says so",
+    (await page.locator("#collectorHeading").textContent()).includes("sharing right now"), true);
+  check("card results are not shown without a term",
+    await page.locator("#cardHeading.hidden").count(), 1);
+  check("a collector shows their shared card count",
+    (await page.locator(".collector-card small").first().textContent()).includes("2 shared cards"), true);
+
+  // Searching by collector name is the point of the page.
+  await page.fill("#publicSearch", "kadin");
+  await page.waitForTimeout(600);
+  check("searching finds the collector", await page.locator(".collector-card").count(), 1);
+  check("it is the right one",
+    (await page.locator(".collector-card b").first().textContent()).trim(), "Kadin R");
+
+  await page.fill("#publicSearch", "someone");
+  await page.waitForTimeout(600);
+  check("searching by handle works too",
+    (await page.locator(".collector-card b").first().textContent()).trim(), "Someone Else");
+
+  // Clicking a collector opens their showcase.
+  await page.locator(".collector-card").first().click();
+  await page.waitForTimeout(700);
+  check("a collector opens their page", page.url().endsWith("/c/someone"), true);
+  await page.goBack();
+  await page.waitForTimeout(600);
 
   await page.fill("#publicSearch", "judge");
   await page.waitForTimeout(600);
-  check("a search returns the matching card", await page.locator("#publicGrid .catalog-card").count(), 1);
+  check("cards still match underneath", await page.locator("#publicGrid .catalog-card").count(), 1);
+  check("the card heading appears with a term",
+    await page.locator("#cardHeading.hidden").count(), 0);
   check("the owner's handle is shown",
     (await page.locator("#publicGrid .meta span").first().textContent()).trim(), "@kadin");
   check("a shared value is displayed",
     (await page.locator("#publicGrid .price-tag strong").first().textContent()).trim(), "$450.00");
 
   // Searching reads the public view and nothing else.
-  check("only the public view is queried",
-    backend.publicQueries.every((q) => q.includes("select=")), true);
+  check("collector search only ever asks for shared profiles",
+    backend.collectorQueries.every((q) => q.includes("is_public=eq.true")), true);
 
   await page.fill("#publicSearch", "yankees");
   await page.waitForTimeout(600);
