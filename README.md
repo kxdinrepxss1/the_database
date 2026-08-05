@@ -91,8 +91,10 @@ the safe columns from cards belonging to shared profiles. Photos of shared
 cards become readable through a matching storage policy; every other photo
 stays closed. Turning the profile switch off closes both again immediately.
 
-Two pages read that view and nothing else. **/search** finds shared cards
-across every collector who has opted in; **/c/&lt;handle&gt;** is one collector's
+Two pages read that view and nothing else. **/search** is a directory of
+collectors who have opted in — it lists them with their shared-card counts
+before anything is typed, matches on handle and display name, and offers card
+matches underneath as a second way in. **/c/&lt;handle&gt;** is one collector's
 showcase. Both work signed out. An unknown handle and a collector who has
 shared nothing look identical from outside, deliberately — neither confirms the
 other exists.
