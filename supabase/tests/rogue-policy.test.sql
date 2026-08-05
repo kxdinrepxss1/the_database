@@ -33,16 +33,31 @@ insert into public.cards (id, user_id, player, card_set, current_value, purchase
    'Kept Private', 'Topps', 1436.00, 575.50, 'Binder 2', 'in the safe', 'private');
 
 -- === The hazard, demonstrated ===
+-- The second policy is the one a real project turned out to be carrying. It
+-- does not look dangerous, and that is the point: reading "your own cards, or
+-- any card marked public" sounds like the sharing rule. It is not. It hands a
+-- signed-in stranger the whole row -- purchase price, storage location, notes
+-- -- for any card marked shared, with no regard for whether the collector ever
+-- switched their profile public. The public_cards view exists precisely so
+-- those columns never leave the database, and this routes around it.
 create policy "Enable read access for all users" on public.cards for select using (true);
+drop policy "Enable read access for all users" on public.cards;
+
+create policy "Users can view their own or public cards" on public.cards for select
+  using ((auth.uid() = user_id) or (visibility = 'public'));
+
+update public.cards set visibility = 'public' where player = 'Kept Private';
 
 set role authenticated;
 set request.jwt.claim.sub = '44444444-4444-4444-4444-444444444444';
 
-select 'a stray permissive policy does leak the table (the bug being fixed): ' ||
+select 'a stray permissive policy does leak private columns (the bug being fixed): ' ||
   case when count(*) = 1 then 'CONFIRMED' else 'NOT REPRODUCED - this test proves nothing' end
-from public.cards where player = 'Kept Private';
+from public.cards
+where player = 'Kept Private' and purchase_price = 575.50 and notes = 'in the safe';
 
 reset role;
+update public.cards set visibility = 'private' where player = 'Kept Private';
 
 -- === Re-running setup.sql must take it back ===
 \i supabase/setup.sql
@@ -51,7 +66,7 @@ select 'setup.sql removed the stray policy: ' ||
   case when count(*) = 0 then 'PASS' else 'FAIL' end
 from pg_policies
 where schemaname = 'public' and tablename = 'cards'
-  and policyname = 'Enable read access for all users';
+  and policyname = 'Users can view their own or public cards';
 
 set role authenticated;
 set request.jwt.claim.sub = '44444444-4444-4444-4444-444444444444';
