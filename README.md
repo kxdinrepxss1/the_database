@@ -18,7 +18,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 
 - `worker/index.js` — the complete website and application logic
 - `supabase/setup.sql` — database, storage, and privacy policies
-- `supabase/tests/` — optional checks for the row-level-security policies
+- `supabase/tests/` — checks for the row-level-security policies
 - `test/` — rendering, scan limits, export archives, and error reporting
 - `.github/workflows/test.yml` — runs those checks on every pull request
 - `wrangler.toml` — configuration for independent Cloudflare Workers hosting
@@ -46,6 +46,21 @@ If you do not see that line, the script did not fully apply. Both of those
 checks exist because "create table if not exists" is silent about the case that
 has actually caused problems: a name already taken by something else, skipped
 without complaint, failing much later somewhere confusing.
+
+It also removes access rules it did not write, naming each one:
+
+```
+NOTICE: setup.sql removed 1 access rule(s) it did not define:
+  public.cards: "Enable read access for all users"
+```
+
+Row-level security policies are combined with OR, not AND. One extra policy
+saying `using (true)` therefore cancels every rule in this script at once — the
+whole table becomes readable by anyone signed in — and because the script drops
+its own policies by name, that extra one survives every re-run untouched.
+Generated starter schemas hand out exactly that policy, under exactly that name.
+If you see the notice above, something was reading more than it should have
+been until you ran this. Policies on other storage buckets are left alone.
 
 The SQL enables row-level security so signed-in users can only access their own
 cards and photo folder. It is safe to re-run at any time, and you should re-run
@@ -107,6 +122,12 @@ part of it.
 `supabase/tests/sharing.test.sql` attacks this from the outside — as an
 anonymous visitor and as a signed-in stranger — and every check passes only
 when the attempt fails.
+
+The app also asks for its own rows by user id rather than trusting the database
+to filter them. Row-level security is still what keeps collections apart, but a
+policy mistake then shows up as missing cards instead of as somebody else's
+cards appearing in your collection, priced and counted as though they were
+yours.
 
 ## How saving works
 
@@ -239,17 +260,25 @@ signed in a single bulk request and cached for their lifetime. Before that,
 signing ran one request per photo in sequence and nothing rendered until it
 finished — a 100-card collection took about ten seconds to show a single card.
 
-The policy tests under `supabase/tests/` are optional and need a scratch
-PostgreSQL database — never point them at your real project:
+## Policy tests
+
+The privacy rules are SQL, so checking them needs a real PostgreSQL. Point
+`DATABASE_URL` at a scratch database — never your real project, since these
+suites create users, plant deliberately broken policies, and delete rows:
 
 ```bash
-psql "$SCRATCH_DB" -f supabase/tests/stub-supabase.sql
-psql "$SCRATCH_DB" -f supabase/setup.sql
-psql "$SCRATCH_DB" -f supabase/tests/policies.test.sql
+DATABASE_URL=postgres://... supabase/tests/run.sh
 ```
 
 They confirm that collectors cannot read each other's cards, cannot write rows
-owned by someone else, and cannot clear their own scan counter.
+owned by someone else, and cannot clear their own scan counter; that an
+anonymous visitor and a signed-in stranger both see only what was shared; and
+that a stray permissive policy planted on the cards table leaks the collection
+until `setup.sql` is re-run, and does not afterwards.
+
+This job runs on every pull request. It used to be documented as optional,
+which meant it never ran anywhere, which is how a real project ended up serving
+one collector's whole collection — purchase prices included — to another.
 
 ## Deploy independently
 
