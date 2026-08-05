@@ -21,7 +21,7 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
@@ -46,6 +46,20 @@ async function supabase(req, url, body) {
       backend.snapshots = backend.snapshots.concat(Array.isArray(rows) ? rows : [rows]);
       return [201, null];
     }
+  }
+  if (url.pathname === "/rest/v1/public_cards") {
+    backend.publicQueries.push(url.search);
+    const handle = (url.search.match(/handle=eq\.([^&]+)/) || [])[1];
+    const or = (url.search.match(/or=\(([^)]*)\)/) || [])[1] || "";
+    let rows = backend.publicCards;
+    if (handle) rows = rows.filter((r) => r.handle === decodeURIComponent(handle));
+    if (or) {
+      // Mirror PostgREST's ilike well enough to prove the filter is applied.
+      const term = decodeURIComponent((or.match(/player\.ilike\.([^,]*)/) || [])[1] || "").replace(/\*/g, "").toLowerCase();
+      rows = rows.filter((r) => ["player", "card_set", "team", "parallel"]
+        .some((f) => String(r[f] || "").toLowerCase().includes(term)));
+    }
+    return [200, rows];
   }
   if (url.pathname === "/rest/v1/collector_profiles") {
     if (req.method === "GET") {
@@ -768,6 +782,99 @@ const queued = (page) => page.evaluate(() =>
   check("editing shows the card as shared",
     await page.locator('[name="shared"]').isChecked(), true);
   check("no errors on the card sharing path", errors, []);
+  await context.close();
+}
+
+// --- Browsing other collectors' shared cards --------------------------------
+const PUBLIC_ROWS = [
+  { id: "dddddddd-6666-4666-8666-666666666661", handle: "kadin", display_name: "Kadin R",
+    player: "Aaron Judge", year: 2024, sport: "Baseball", card_set: "Topps Chrome",
+    card_number: "#1", team: "Yankees", parallel: "Refractor", grade: "PSA 9", quantity: 1,
+    current_value: 450, front_image_path: "u/1-front.jpg", created_at: "2026-07-01T00:00:00Z",
+    storage_container: "SECRETBINDER", storage_slot: "SECRETSLOT",
+    purchase_price: 99999, notes: "SECRETNOTE", user_id: "SECRETOWNER" },
+  { id: "dddddddd-6666-4666-8666-666666666662", handle: "kadin", display_name: "Kadin R",
+    player: "Juan Soto", year: 2024, sport: "Baseball", card_set: "Topps", card_number: "#2",
+    team: "Yankees", parallel: "Base", grade: "Raw", quantity: 1,
+    current_value: null, front_image_path: "u/2-front.jpg", created_at: "2026-07-02T00:00:00Z" },
+  { id: "dddddddd-6666-4666-8666-666666666663", handle: "someone", display_name: "Someone Else",
+    player: "Shohei Ohtani", year: 2024, sport: "Baseball", card_set: "Bowman", card_number: "#3",
+    team: "Dodgers", parallel: "Base", grade: "Raw", quantity: 1,
+    current_value: null, front_image_path: "u/3-front.jpg", created_at: "2026-07-03T00:00:00Z" },
+];
+
+// The search page, signed out, which is how most visitors will arrive.
+{
+  backend.publicCards = PUBLIC_ROWS; backend.publicQueries = []; backend.signCalls = 0;
+  const { context, page, errors } = await open("/search");
+
+  check("nothing is queried before a term is typed",
+    backend.publicQueries.length, 0);
+  check("the empty state invites a search",
+    (await page.locator("#publicEmptyText").textContent()).includes("to begin"), true);
+
+  await page.fill("#publicSearch", "judge");
+  await page.waitForTimeout(600);
+  check("a search returns the matching card", await page.locator("#publicGrid .catalog-card").count(), 1);
+  check("the owner's handle is shown",
+    (await page.locator("#publicGrid .meta span").first().textContent()).trim(), "@kadin");
+  check("a shared value is displayed",
+    (await page.locator("#publicGrid .price-tag strong").first().textContent()).trim(), "$450.00");
+
+  // Searching reads the public view and nothing else.
+  check("only the public view is queried",
+    backend.publicQueries.every((q) => q.includes("select=")), true);
+
+  await page.fill("#publicSearch", "yankees");
+  await page.waitForTimeout(600);
+  check("searching by team works", await page.locator("#publicGrid .catalog-card").count(), 2);
+
+  await page.fill("#publicSearch", "nobody at all");
+  await page.waitForTimeout(600);
+  check("no matches shows the empty state", await page.locator("#publicEmpty:not(.hidden)").count(), 1);
+
+  check("no errors while searching", errors, []);
+  await context.close();
+}
+
+// A collector's showcase page.
+{
+  backend.publicCards = PUBLIC_ROWS; backend.publicQueries = [];
+  const { context, page, errors } = await open("/c/kadin");
+
+  check("only that collector's cards are shown",
+    await page.locator("#showcaseGrid .catalog-card").count(), 2);
+  check("the query is scoped to the handle",
+    backend.publicQueries[0].includes("handle=eq.kadin"), true);
+  check("the collector is named",
+    (await page.locator("#showcaseName").textContent()).trim(), "Kadin R");
+  check("the count is shown",
+    (await page.locator("#showcaseMeta").textContent()).includes("2 shared cards"), true);
+
+  // Defence in depth: even when the backend hands over fields the real view
+  // would never return, the client must not render them. Checking the whole
+  // document would be meaningless — it ships the private collection form too,
+  // whose placeholder text mentions binders — so this checks what was drawn.
+  const drawn = await page.locator("#showcaseGrid").innerHTML();
+  for (const secret of ["SECRETBINDER", "SECRETSLOT", "99999", "SECRETNOTE", "SECRETOWNER"]) {
+    check(`${secret} is not rendered on a public page`, drawn.includes(secret), false);
+  }
+  // And the private cards table is never touched from a public page.
+  check("a public page never reads the cards table",
+    backend.publicQueries.length > 0 && backend.patches.length === 0, true);
+  check("no errors on the showcase", errors, []);
+  await context.close();
+}
+
+// An unknown or unshared handle must not confirm whether the collector exists.
+{
+  backend.publicCards = PUBLIC_ROWS;
+  const { context, page, errors } = await open("/c/nobodyhere");
+  check("an unknown handle shows the empty state",
+    await page.locator("#showcaseEmpty:not(.hidden)").count(), 1);
+  check("it does not claim the collector is missing",
+    (await page.locator("#showcaseEmptyText").textContent()).includes("not shared any cards"), true);
+  check("no errors on an unknown handle", errors, []);
   await context.close();
 }
 
