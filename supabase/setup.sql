@@ -1,3 +1,42 @@
+-- ---------------------------------------------------------------------------
+-- Preflight.
+--
+-- Every "create table if not exists" below is silent about the case that has
+-- actually bitten twice: a table of that name already exists, with a different
+-- shape, so creation is skipped and the script fails later against columns that
+-- were never there. Check the names we intend to claim before doing any work,
+-- and say plainly what is wrong.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  problems text[] := '{}';
+  rec record;
+begin
+  for rec in
+    select * from (values
+      ('cards','user_id'),
+      ('collector_profiles','user_id'),
+      ('collection_snapshots','user_id'),
+      ('scan_events','user_id'),
+      ('error_events','user_id')
+    ) as t(relname, keycol)
+  loop
+    if to_regclass('public.' || rec.relname) is not null
+       and not exists (
+         select 1 from information_schema.columns
+         where table_schema = 'public' and table_name = rec.relname and column_name = rec.keycol
+       )
+    then
+      problems := problems || format('public.%s already exists but has no %s column', rec.relname, rec.keycol);
+    end if;
+  end loop;
+
+  if array_length(problems, 1) is not null then
+    raise exception E'Cannot apply setup.sql:\n  %\n\nSomething unrelated already owns that name. Rename or drop it, then run this again. Nothing has been changed.',
+      array_to_string(problems, E'\n  ');
+  end if;
+end $$;
+
 create extension if not exists pgcrypto;
 
 create table if not exists public.cards (
@@ -356,3 +395,73 @@ using (
   and (storage.foldername(name))[1] = auth.uid()::text
 );
 
+-- ---------------------------------------------------------------------------
+-- Verification.
+--
+-- Everything above uses "create ... if not exists", which is idempotent but
+-- silent: if an object of the same name already exists with a different shape,
+-- creation is skipped and the failure surfaces much later as a confusing error
+-- about a missing column, or not at all. That has happened twice.
+--
+-- This block asserts that the schema actually landed, and that the privacy
+-- rules hold, every time the script is run against a real project. A failure
+-- here names exactly what is wrong.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  problems text[] := '{}';
+  rec record;
+begin
+  for rec in
+    select * from (values
+      ('cards','user_id'), ('cards','visibility'), ('cards','current_value'),
+      ('cards','storage_container'), ('cards','storage_section'), ('cards','storage_slot'),
+      ('collector_profiles','user_id'), ('collector_profiles','handle'),
+      ('collector_profiles','display_name'), ('collector_profiles','is_public'),
+      ('collector_profiles','show_values'),
+      ('collection_snapshots','user_id'), ('collection_snapshots','total'),
+      ('scan_events','user_id'),
+      ('error_events','user_id'), ('error_events','app_version'),
+      ('public_cards','handle'), ('public_cards','player'), ('public_cards','current_value'),
+      ('public_cards','front_image_path')
+    ) as t(relname, colname)
+  loop
+    if not exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = rec.relname and column_name = rec.colname
+    ) then
+      problems := problems || format('missing: public.%s.%s', rec.relname, rec.colname);
+    end if;
+  end loop;
+
+  -- The privacy rules, checked against the real database rather than assumed.
+  for rec in
+    select unnest(array['storage_container','storage_section','storage_slot','storage_location',
+                        'purchase_price','purchase_date','notes','user_id','collection_status']) as colname
+  loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = 'public_cards' and column_name = rec.colname
+    ) then
+      problems := problems || format('public_cards must not expose %s', rec.colname);
+    end if;
+  end loop;
+
+  if not exists (select 1 from pg_proc where proname = 'is_shared_card_photo') then
+    problems := problems || 'missing: public.is_shared_card_photo()';
+  end if;
+
+  if not exists (
+    select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects'
+      and policyname = 'Anyone can read photos of shared cards'
+  ) then
+    problems := problems || 'missing storage policy: Anyone can read photos of shared cards';
+  end if;
+
+  if array_length(problems, 1) is not null then
+    raise exception E'setup.sql did not fully apply:\n  %\n\nThis usually means something of the same name already exists with a different shape. Inspect it, rename or drop it, then run this again.',
+      array_to_string(problems, E'\n  ');
+  end if;
+
+  raise notice 'setup.sql verified: schema in place and the public view exposes nothing private.';
+end $$;
