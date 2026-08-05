@@ -31,6 +31,21 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 4. In **Authentication → URL Configuration**, set the Site URL and redirect
    URLs to the address where you deploy the app.
 
+`setup.sql` checks itself. It refuses to start if a table it needs is already
+owned by something with a different shape, naming what is wrong before changing
+anything, and it asserts at the end that every expected table, column, view,
+function and storage policy is in place — including that the public view exposes
+no storage location, purchase price or note. A successful run prints:
+
+```
+NOTICE: setup.sql verified: schema in place and the public view exposes nothing private.
+```
+
+If you do not see that line, the script did not fully apply. Both of those
+checks exist because "create table if not exists" is silent about the case that
+has actually caused problems: a name already taken by something else, skipped
+without complaint, failing much later somewhere confusing.
+
 The SQL enables row-level security so signed-in users can only access their own
 cards and photo folder. It is safe to re-run at any time, and you should re-run
 it after pulling changes — the card scanner refuses to run until the
