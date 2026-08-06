@@ -163,6 +163,35 @@ point on a trend line, whereas a card is the collector's actual data. Writes are
 debounced, so a burst of price edits leaves one point rather than one per
 keystroke.
 
+## Reports
+
+The directory lists every collector who opts in, and handles are checked for
+shape but not for meaning, so nothing stops one being a slur. Every showcase
+page carries a **Report this collection** link. It works signed out on purpose:
+a visitor who is not a collector is exactly who will notice a problem first, and
+making them sign up to say so means they will not say so.
+
+Reports are insert-only. Nobody can read them back through the API, whatever
+role they hold, because a table of accusations that collectors could read would
+be worse than the thing it reports. Read them from the SQL editor, which
+bypasses row-level security:
+
+```sql
+select created_at, reported_handle, reason, detail
+from public.reports order by created_at desc limit 50;
+```
+
+To act on one, close the collection down:
+
+```sql
+update public.collector_profiles set is_public = false, is_listed = false
+where handle = 'whoever';
+```
+
+A signed-in reporter may only file as themselves and an anonymous one files as
+nobody, so a report cannot be put in somebody else's name. The app thanks the
+reporter rather than promising an outcome, because none can be guaranteed.
+
 ## Seeing what is failing
 
 Signed-in clients record their own failures to `error_events`. Reports contain

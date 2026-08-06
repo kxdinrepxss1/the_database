@@ -21,12 +21,17 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
+  if (url.pathname === "/rest/v1/reports") {
+    if (backend.failReport) return [500, { message: "could not file" }];
+    backend.reports.push(JSON.parse(body || "{}"));
+    return [201, null];
+  }
   if (url.pathname === "/rest/v1/rpc/delete_own_account") {
     backend.accountDeletes++;
     if (backend.failDelete) return [500, { message: "could not delete" }];
@@ -969,6 +974,57 @@ const PUBLIC_ROWS = [
     backend.publicQueries.length > 0 && backend.patches.length === 0, true);
   check("no errors on the showcase", errors, []);
   await context.close();
+}
+
+// --- Reporting a collection ---------------------------------------------------
+// The directory lists every collector who opts in, and handles are checked for
+// shape but not for meaning. Somebody has to be able to say so, and the person
+// who notices first is usually not signed in.
+{
+  backend.publicCards = PUBLIC_ROWS; backend.reports = []; backend.failReport = false;
+  const { context, page, errors } = await open("/c/kadin");
+  await page.waitForFunction(() => document.querySelectorAll("#showcaseGrid .catalog-card").length > 0);
+
+  check("the form is not in the way until asked",
+    await page.locator("#reportBox").isVisible(), false);
+  await page.click("#reportCollection");
+  check("asking opens it", await page.locator("#reportBox").isVisible(), true);
+
+  await page.selectOption("#reportReason", "offensive");
+  await page.fill("#reportDetail", "the handle is a slur");
+  await page.click("#sendReport");
+  await page.waitForFunction(() => document.querySelector("#reportBox").classList.contains("hidden"));
+
+  check("one report is filed", backend.reports.length, 1);
+  check("it names the collection reported", backend.reports[0].reported_handle, "kadin");
+  check("it carries the reason", backend.reports[0].reason, "offensive");
+  check("and what was written", backend.reports[0].detail, "the handle is a slur");
+  // Signed out, so there is nobody to attribute it to. Putting a user id here
+  // would be the only way a report could be filed in somebody else's name.
+  check("a signed-out report names no reporter", backend.reports[0].reporter_user_id, null);
+  check("the visitor is thanked rather than promised an outcome",
+    (await page.locator("#reportCollection").textContent()).includes("Thank you"), true);
+  check("and cannot file the same one twice",
+    await page.locator("#reportCollection").isDisabled(), true);
+  check("no errors while reporting", errors, []);
+  await context.close();
+}
+
+// A report that does not send must say so, not swallow it.
+{
+  backend.publicCards = PUBLIC_ROWS; backend.reports = []; backend.failReport = true;
+  const { context, page, errors } = await open("/c/kadin");
+  await page.waitForSelector("#reportCollection");
+  await page.click("#reportCollection");
+  await page.click("#sendReport");
+  await page.waitForFunction(() => document.querySelector("#reportMessage").textContent.length > 0);
+  check("a failed report says so",
+    (await page.locator("#reportMessage").textContent()).includes("could not be sent"), true);
+  check("the form stays open to retry", await page.locator("#reportBox").isVisible(), true);
+  check("and nothing was recorded as filed", backend.reports.length, 0);
+  check("no errors on a failed report", errors, []);
+  await context.close();
+  backend.failReport = false;
 }
 
 // An unknown or unshared handle must not confirm whether the collector exists.

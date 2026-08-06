@@ -24,8 +24,11 @@ grant select on public.public_cards to authenticated, anon;
 grant select on public.collector_profiles to anon;
 grant select on storage.objects to authenticated, anon;
 
-delete from public.cards where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
-delete from public.collector_profiles where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
+-- Every user this file touches, including the one added at the end: a suite
+-- that only cleans up some of its rows passes once and then fails on a second
+-- run against the same database, which is the worst way to find out.
+delete from public.cards where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '77777777-7777-7777-7777-777777777777');
+delete from public.collector_profiles where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '77777777-7777-7777-7777-777777777777');
 delete from storage.objects where bucket_id = 'card-photos';
 
 -- One collector shares; the other does not.
@@ -274,3 +277,68 @@ reset role;
 
 update public.collector_profiles set is_listed = true
  where user_id = '11111111-1111-1111-1111-111111111111';
+
+-- === Reports ===
+-- Anyone can file one; nobody can read them back. A table of accusations that
+-- collectors could read would be worse than what it reports.
+grant insert on public.reports to anon, authenticated;
+grant select on public.reports to anon, authenticated;
+
+set role anon;
+do $$
+begin
+  insert into public.reports (reported_handle, reason) values ('sharer', 'impersonation');
+  raise notice 'an anonymous visitor can file a report: PASS';
+exception when others then
+  raise notice 'an anonymous visitor can file a report: FAIL (%)', sqlerrm;
+end $$;
+
+select 'nobody can read reports back, even with select granted: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ' rows)' end
+from public.reports;
+reset role;
+
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+do $$
+begin
+  insert into public.reports (reported_handle, reason, reporter_user_id)
+  values ('sharer', 'stolen-photos', '22222222-2222-2222-2222-222222222222');
+  raise notice 'a signed-in collector can file as themselves: PASS';
+exception when others then
+  raise notice 'a signed-in collector can file as themselves: FAIL (%)', sqlerrm;
+end $$;
+
+-- Putting somebody else's name to a report would make it a way to frame them.
+do $$
+begin
+  insert into public.reports (reported_handle, reason, reporter_user_id)
+  values ('sharer', 'spite', '11111111-1111-1111-1111-111111111111');
+  raise notice 'filing a report as somebody else is blocked: FAIL';
+exception when others then
+  raise notice 'filing a report as somebody else is blocked: PASS';
+end $$;
+
+do $$
+begin
+  update public.reports set reason = 'edited';
+  raise notice 'reports cannot be edited: FAIL';
+exception when others then
+  raise notice 'reports cannot be edited: PASS';
+end $$;
+
+do $$
+begin
+  delete from public.reports;
+  raise notice 'reports cannot be deleted away: FAIL';
+exception when others then
+  raise notice 'reports cannot be deleted away: PASS';
+end $$;
+reset role;
+
+-- The SQL editor bypasses row-level security, which is how they get read.
+select 'the reports are there for an owner to read: ' ||
+  case when count(*) >= 2 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.reports;
+
+delete from public.reports;

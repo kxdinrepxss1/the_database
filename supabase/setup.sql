@@ -343,6 +343,66 @@ create policy "Collectors can read their errors"
 on public.error_events for select
 using (auth.uid() = user_id);
 
+-- ---------------------------------------------------------------------------
+-- Reports.
+--
+-- The directory lists every collector who opts in, and handles are checked for
+-- shape but not for meaning, so nothing stops one being a slur. Somebody has to
+-- be able to say so, and until now there was no way to and nowhere to look.
+--
+-- Insert-only by design. Anyone can file one, signed in or not, because a
+-- visitor who is not a collector is exactly who will see a problem first. Nobody
+-- can read them back: reports name people, and a table of accusations that
+-- collectors could read would be worse than the thing it reports. Read them from
+-- the SQL editor, which bypasses row-level security:
+--
+--   select created_at, reported_handle, reason, detail
+--   from public.reports order by created_at desc limit 50;
+--
+-- To act on one:
+--
+--   update public.collector_profiles set is_public = false, is_listed = false
+--   where handle = 'whoever';
+-- ---------------------------------------------------------------------------
+create table if not exists public.reports (
+  id uuid primary key default gen_random_uuid(),
+  reported_handle text not null,
+  reason text not null,
+  detail text,
+  reporter_user_id uuid references auth.users(id) on delete set null,
+  app_version text,
+  created_at timestamptz not null default now(),
+  -- Bounded so a report cannot be used to write a novel into the table.
+  constraint reports_handle_length check (char_length(reported_handle) between 1 and 64),
+  constraint reports_reason_length check (char_length(reason) between 1 and 64),
+  constraint reports_detail_length check (detail is null or char_length(detail) <= 600)
+);
+
+create index if not exists reports_created_idx on public.reports (created_at desc);
+
+alter table public.reports enable row level security;
+
+drop policy if exists "Anyone can file a report" on public.reports;
+create policy "Anyone can file a report"
+on public.reports for insert
+with check (
+  -- A signed-in reporter may only file as themselves; an anonymous one files
+  -- as nobody. Neither can put somebody else's name to a report.
+  reporter_user_id is null or reporter_user_id = auth.uid()
+);
+
+-- Deliberately no select, update or delete policy. Without one, nobody reads
+-- these back through the API, whatever role they hold.
+
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'grant insert on public.reports to anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant insert on public.reports to authenticated';
+  end if;
+end $$;
+
 -- Housekeeping: these grow forever. Run occasionally, or schedule with pg_cron.
 --   delete from public.error_events where created_at < now() - interval '90 days';
 --   delete from public.scan_events  where created_at < now() - interval '90 days';
@@ -504,7 +564,7 @@ begin
     where (
         (p.schemaname = 'public'
          and p.tablename in ('cards','collector_profiles','scan_events',
-                             'collection_snapshots','error_events'))
+                             'collection_snapshots','error_events','reports'))
         or (p.schemaname = 'storage' and p.tablename = 'objects'
             and coalesce(p.qual, '') || coalesce(p.with_check, '') like '%card-photos%')
       )
@@ -525,6 +585,7 @@ begin
         'Collectors can clear their value history',
         'Collectors can record their errors',
         'Collectors can read their errors',
+        'Anyone can file a report',
         'Anyone can read photos of shared cards',
         'Collectors can read their card photos',
         'Collectors can upload their card photos',
@@ -570,6 +631,7 @@ begin
       ('collection_snapshots','user_id'), ('collection_snapshots','total'),
       ('scan_events','user_id'),
       ('error_events','user_id'), ('error_events','app_version'),
+      ('reports','reported_handle'), ('reports','reason'),
       ('public_cards','handle'), ('public_cards','player'), ('public_cards','current_value'),
       ('public_cards','front_image_path')
     ) as t(relname, colname)
@@ -622,7 +684,7 @@ begin
   -- the table is simply open, and every rule above becomes decoration.
   for rec in
     select unnest(array['cards','collector_profiles','scan_events',
-                        'collection_snapshots','error_events']) as relname
+                        'collection_snapshots','error_events','reports']) as relname
   loop
     if not exists (
       select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
