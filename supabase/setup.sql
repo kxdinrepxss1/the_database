@@ -627,6 +627,7 @@ begin
       ('cards','storage_container'), ('cards','storage_section'), ('cards','storage_slot'),
       ('collector_profiles','user_id'), ('collector_profiles','handle'),
       ('collector_profiles','display_name'), ('collector_profiles','is_public'),
+      ('collector_profiles','is_listed'),
       ('collector_profiles','show_values'),
       ('collection_snapshots','user_id'), ('collection_snapshots','total'),
       ('scan_events','user_id'),
