@@ -123,8 +123,8 @@ for (const icon of manifest.icons || []) {
 
 for (const [path, type] of [
   ["/favicon.ico", "image/png"],
+  ["/icon-16.png", "image/png"],
   ["/apple-touch-icon.png", "image/png"],
-  ["/icon.svg", "image/svg+xml"],
 ]) {
   const res = await worker.fetch(new Request("https://x" + path), env);
   check(`${path} is served`, res.status, 200);
@@ -133,7 +133,14 @@ for (const [path, type] of [
 
 const home = await (await worker.fetch(new Request("https://x/"), env)).text();
 check("the page links an apple touch icon", home.includes('rel="apple-touch-icon"'), true);
-check("the page links an svg icon", home.includes('href="/icon.svg"'), true);
+check("the page links a tab icon", home.includes('href="/icon-16.png"'), true);
+// Every icon route the page or manifest points at must actually exist, or a
+// missing entry becomes a 500 rather than a 404.
+for (const ref of home.match(/href="(\/[\w.-]+\.(?:png|ico))"/g) || []) {
+  const path = ref.slice(6, -1);
+  check(`${path} referenced by the page resolves`,
+    (await worker.fetch(new Request("https://x" + path), env)).status, 200);
+}
 
 console.log(failed ? "\nFAILED" : "\nAll checks passed");
 process.exit(failed ? 1 : 0);
