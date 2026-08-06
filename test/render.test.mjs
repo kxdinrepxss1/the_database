@@ -75,6 +75,15 @@ const scanPage = async (extraEnv) =>
 const withoutAi = await scanPage({});
 const withAi = await scanPage({ OPENAI_API_KEY: "sk-test" });
 
+// The nav must not label the page as something the deployment cannot do. With
+// no key the page is a photo form, and calling it "Scan" invites a tester to
+// think it is broken rather than absent.
+check("the nav says Add without a key", /class="[^"]*"><b>◎<\/b>Add</.test(withoutAi), true);
+check("and Scan with one", /class="[^"]*"><b>◎<\/b>Scan</.test(withAi), true);
+check("no stale Scan label without a key", />Scan</.test(withoutAi), false);
+check("the label follows the page copy",
+  withoutAi.includes("Snap it.") && !withoutAi.includes("Point. Scan."), true);
+
 check("SCAN_AI is false without a key", withoutAi.includes("SCAN_AI=false"), true);
 check("SCAN_AI is true with a key", withAi.includes("SCAN_AI=true"), true);
 
