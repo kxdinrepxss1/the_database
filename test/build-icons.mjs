@@ -209,11 +209,48 @@ const built = await page.evaluate(async ({ src, LIME, ACCENT, INK, sizes }) => {
     return c.toDataURL("image/png");
   }
 
+  // The header sits on a translucent bar that the page scrolls behind, so the
+  // mark there cannot carry its own background. Every pixel is a mix of the
+  // artwork's near-black and one of the two brand colours; working out which,
+  // and in what proportion, turns that mix back into a colour plus an alpha.
+  function onTransparent(region, height) {
+    const sw = region.right - region.left + 1, sh = region.bottom - region.top + 1;
+    const c = document.createElement("canvas");
+    c.height = height; c.width = Math.round(height * sw / sh);
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(source, region.left, region.top, sw, sh, 0, 0, c.width, c.height);
+    const f = ctx.getImageData(0, 0, c.width, c.height), q = f.data;
+    const CREAM = [0xf4, 0xf1, 0xe8];
+    for (let i = 0; i < q.length; i += 4) {
+      let best = null;
+      for (const C of [CREAM, ACCENT]) {
+        const a = [0, 1, 2].map((k) => (q[i + k] - INK[k]) / (C[k] - INK[k]));
+        const mean = (a[0] + a[1] + a[2]) / 3;
+        // How well one alpha explains all three channels. The wrong colour
+        // needs a different alpha per channel and loses.
+        const spread = Math.max(...a.map((v) => Math.abs(v - mean)));
+        if (!best || spread < best.spread) best = { C, mean, spread };
+      }
+      const alpha = Math.max(0, Math.min(1, best.mean));
+      q[i] = best.C[0]; q[i + 1] = best.C[1]; q[i + 2] = best.C[2];
+      q[i + 3] = Math.round(alpha * 255);
+    }
+    ctx.putImageData(f, 0, 0);
+    return c.toDataURL("image/png").split(",")[1];
+  }
+
   const out = {};
   for (const [name, size, opts] of sizes) {
     const region = opts.letters ? letters : mark;
     out[name] = compose(size, region, opts.fill, opts.rounded !== false).split(",")[1];
   }
+  // The header mark, at three times the largest size it is drawn at so it
+  // stays sharp on dense screens. The letters rather than the whole mark: the
+  // header draws it at 26px, where the card outlines are a smudge, and the
+  // wordmark sits right beside it so the cards have nothing left to say.
+  // Passing `mark` here instead would use the full drawing.
+  out.MARK_LETTERS = onTransparent(letters, 132);
   // The whole recoloured, corrected artwork, so the changes above exist as a
   // file somebody can open rather than only as pixels inside the Worker.
   return { out, mark, letters, bands, corrected: source.toDataURL("image/png") };
