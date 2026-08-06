@@ -20,6 +20,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - `supabase/setup.sql` — database, storage, and privacy policies
 - `supabase/tests/` — checks for the row-level-security policies
 - `test/` — rendering, scan limits, export archives, and error reporting
+- `test/build-icons.mjs` — draws the app icons and writes them into the Worker
 - `.github/workflows/test.yml` — runs those checks on every pull request
 - `wrangler.toml` — configuration for independent Cloudflare Workers hosting
 - `.dev.vars.example` — local environment-variable template
