@@ -21,20 +21,39 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
+  if (url.pathname === "/rest/v1/reports") {
+    if (backend.failReport) return [500, { message: "could not file" }];
+    backend.reports.push(JSON.parse(body || "{}"));
+    return [201, null];
+  }
+  if (url.pathname === "/rest/v1/rpc/delete_own_account") {
+    backend.accountDeletes++;
+    if (backend.failDelete) return [500, { message: "could not delete" }];
+    backend.cards = []; backend.profiles = []; backend.snapshots = [];
+    return [204, null];
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/storage/v1/object/card-photos/")) {
+    backend.photoDeletes.push(url.pathname.replace("/storage/v1/object/card-photos/", ""));
+    return [200, {}];
+  }
   if (url.pathname.startsWith("/storage/v1/object/sign/")) {
     let parsed = {}; try { parsed = JSON.parse(body || "{}"); } catch {}
+    // The signed URL names the file it points at, so a test can tell whether
+    // the page asked for a thumbnail or the full photo. Real signed URLs do
+    // the same; they carry the object path plus a token.
+    const sign = (path) => "/photo.jpg?p=" + encodeURIComponent(path) + "&token=x";
     if (Array.isArray(parsed.paths)) {
       backend.signCalls++;
-      return [200, parsed.paths.map((path) => ({ path, signedURL: "/photo.jpg?token=x" }))];
+      return [200, parsed.paths.map((path) => ({ path, signedURL: sign(path) }))];
     }
     backend.signCalls++;
-    return [200, { signedURL: "/photo.jpg?token=x" }];
+    return [200, { signedURL: sign(url.pathname.replace("/storage/v1/object/sign/card-photos/", "")) }];
   }
   if (url.pathname.startsWith("/storage/v1/")) return [200, {}];
   if (url.pathname === "/rest/v1/collection_snapshots") {
@@ -70,7 +89,11 @@ async function supabase(req, url, body) {
     if (req.method === "GET") {
       if (url.search.includes("is_public=eq.true")) {
         backend.collectorQueries.push(url.search);
-        let rows = backend.publicProfiles;
+        // In the real database this is enforced by the policy, not the query.
+        // Honouring it here means a client that stopped asking would be caught.
+        let rows = url.search.includes("is_listed=eq.true")
+          ? backend.publicProfiles.filter((p) => p.is_listed !== false)
+          : backend.publicProfiles;
         const or = (url.search.match(/or=\(([^)]*)\)/) || [])[1] || "";
         if (or) {
           const term = decodeURIComponent((or.match(/handle\.ilike\.([^,]*)/) || [])[1] || "")
@@ -768,6 +791,30 @@ const queued = (page) => page.evaluate(() =>
   check("the public link is shown",
     (await page.locator("#shareUrl").textContent()).includes("/c/kadin"), true);
 
+  // Sharing and being listed are separate decisions. Sharing on its own gives
+  // a link; it must not put somebody on a public page beside their own
+  // collection's value without them saying so.
+  check("listing starts off", await page.locator("#shareListed").isChecked(), false);
+  check("sharing alone does not list", backend.profiles[0].is_listed, false);
+  check("and the app says the link is the only way in",
+    (await page.locator("#shareMessage").textContent()).includes("link"), true);
+
+  await page.check("#shareListed");
+  await page.click("#saveShare");
+  await page.waitForTimeout(500);
+  check("ticking it lists them", backend.profiles[0].is_listed, true);
+  check("and it stays shared", backend.profiles[0].is_public, true);
+
+  // Listing an unshared collection would put an empty page in the directory.
+  await page.uncheck("#sharePublic");
+  await page.click("#saveShare");
+  await page.waitForTimeout(500);
+  check("unsharing also unlists", backend.profiles[0].is_listed, false);
+
+  await page.check("#sharePublic");
+  await page.click("#saveShare");
+  await page.waitForTimeout(500);
+
   // Bulk sharing goes out as one request, not one per card.
   await page.click("#shareAll");
   await page.waitForTimeout(400);
@@ -832,8 +879,10 @@ const PUBLIC_ROWS = [
   backend.publicCards = PUBLIC_ROWS; backend.publicQueries = []; backend.signCalls = 0;
   backend.collectorQueries = [];
   backend.publicProfiles = [
-    { handle: "kadin", display_name: "Kadin R" },
-    { handle: "someone", display_name: "Someone Else" },
+    { handle: "kadin", display_name: "Kadin R", is_listed: true },
+    { handle: "someone", display_name: "Someone Else", is_listed: true },
+    // Shared by link, but not listed. The directory must not show them.
+    { handle: "bylink", display_name: "Link Only", is_listed: false },
   ];
   const { context, page, errors } = await open("/search");
 
@@ -881,6 +930,8 @@ const PUBLIC_ROWS = [
     (await page.locator("#publicGrid .price-tag strong").first().textContent()).trim(), "$450.00");
 
   // Searching reads the public view and nothing else.
+  check("the directory asks for listed profiles, not merely shared",
+    backend.collectorQueries.every((q) => q.includes("is_listed=eq.true")), true);
   check("collector search only ever asks for shared profiles",
     backend.collectorQueries.every((q) => q.includes("is_public=eq.true")), true);
 
@@ -923,6 +974,57 @@ const PUBLIC_ROWS = [
     backend.publicQueries.length > 0 && backend.patches.length === 0, true);
   check("no errors on the showcase", errors, []);
   await context.close();
+}
+
+// --- Reporting a collection ---------------------------------------------------
+// The directory lists every collector who opts in, and handles are checked for
+// shape but not for meaning. Somebody has to be able to say so, and the person
+// who notices first is usually not signed in.
+{
+  backend.publicCards = PUBLIC_ROWS; backend.reports = []; backend.failReport = false;
+  const { context, page, errors } = await open("/c/kadin");
+  await page.waitForFunction(() => document.querySelectorAll("#showcaseGrid .catalog-card").length > 0);
+
+  check("the form is not in the way until asked",
+    await page.locator("#reportBox").isVisible(), false);
+  await page.click("#reportCollection");
+  check("asking opens it", await page.locator("#reportBox").isVisible(), true);
+
+  await page.selectOption("#reportReason", "offensive");
+  await page.fill("#reportDetail", "the handle is a slur");
+  await page.click("#sendReport");
+  await page.waitForFunction(() => document.querySelector("#reportBox").classList.contains("hidden"));
+
+  check("one report is filed", backend.reports.length, 1);
+  check("it names the collection reported", backend.reports[0].reported_handle, "kadin");
+  check("it carries the reason", backend.reports[0].reason, "offensive");
+  check("and what was written", backend.reports[0].detail, "the handle is a slur");
+  // Signed out, so there is nobody to attribute it to. Putting a user id here
+  // would be the only way a report could be filed in somebody else's name.
+  check("a signed-out report names no reporter", backend.reports[0].reporter_user_id, null);
+  check("the visitor is thanked rather than promised an outcome",
+    (await page.locator("#reportCollection").textContent()).includes("Thank you"), true);
+  check("and cannot file the same one twice",
+    await page.locator("#reportCollection").isDisabled(), true);
+  check("no errors while reporting", errors, []);
+  await context.close();
+}
+
+// A report that does not send must say so, not swallow it.
+{
+  backend.publicCards = PUBLIC_ROWS; backend.reports = []; backend.failReport = true;
+  const { context, page, errors } = await open("/c/kadin");
+  await page.waitForSelector("#reportCollection");
+  await page.click("#reportCollection");
+  await page.click("#sendReport");
+  await page.waitForFunction(() => document.querySelector("#reportMessage").textContent.length > 0);
+  check("a failed report says so",
+    (await page.locator("#reportMessage").textContent()).includes("could not be sent"), true);
+  check("the form stays open to retry", await page.locator("#reportBox").isVisible(), true);
+  check("and nothing was recorded as filed", backend.reports.length, 0);
+  check("no errors on a failed report", errors, []);
+  await context.close();
+  backend.failReport = false;
 }
 
 // An unknown or unshared handle must not confirm whether the collector exists.
@@ -994,6 +1096,236 @@ const PUBLIC_ROWS = [
     await showcase.page.locator("#showcaseGrid .fresh").count(), 1);
   check("no errors on the showcase", showcase.errors, []);
   await showcase.context.close();
+}
+
+// --- Photo bandwidth ----------------------------------------------------------
+// Signed URLs expire, and when one is reissued its token changes, so the
+// browser treats the photo as a new file and downloads it again. At two hours
+// that meant a hundred-card collection re-fetching 24MB of images two or three
+// times a day, which is most of a free tier for one person.
+{
+  backend.cards = Array.from({ length: 6 }, (_, i) => ({
+    id: `bbbbbbbb-9999-4999-8999-99999999999${i}`, user_id: USER.id,
+    player: `Player ${i}`, year: 2024, card_set: "Topps", parallel: "Base",
+    grade: "Raw", quantity: 1,
+    front_image_path: `${USER.id}/${i}-front.jpg`,
+    front_thumb_path: `${USER.id}/${i}-front-thumb.jpg`,
+  }));
+  backend.snapshots = []; backend.noSnapshotTable = false; backend.signCalls = 0;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/collection`);
+  await page.waitForFunction(() => document.querySelectorAll("#grid .card-photo").length > 0);
+
+  // The grid draws tiles about 300px wide. Asking for the full photo there is
+  // the whole cost problem.
+  const gridSources = await page.evaluate(() =>
+    [...document.querySelectorAll("#grid .card-photo")].map((i) => i.getAttribute("src")));
+  check("every tile draws the thumbnail",
+    gridSources.every((src) => src.includes("-front-thumb.jpg")), true);
+  check("no tile draws the full photo",
+    gridSources.some((src) => /\d-front\.jpg/.test(src)), false);
+
+  // The detail view is where somebody actually looks at the card.
+  await page.click(".catalog-card");
+  await page.waitForSelector(".detail-art .card-photo");
+  const detail = await page.locator(".detail-art .card-photo").getAttribute("src");
+  check("the card itself opens the full photo", detail.includes("-front-thumb.jpg"), false);
+  await page.keyboard.press("Escape");
+
+  // A cached URL must survive a reload, or the cache is doing nothing.
+  const before = backend.signCalls;
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll("#grid .card-photo").length > 0);
+  check("a reload signs nothing again", backend.signCalls, before);
+
+  const cached = await page.evaluate(() =>
+    Object.values(JSON.parse(localStorage.getItem("the-database-signed") || "{}"))
+      .map((v) => v.expires));
+  const days = (Math.min(...cached) - Date.now()) / 86400000;
+  check("signed URLs are kept for days, not hours", days > 5, true);
+  check("no errors while loading photos", errors, []);
+  await context.close();
+}
+
+// --- Sold-price lookup --------------------------------------------------------
+// 130point takes no search term in its address, so the terms go to the
+// clipboard and the site is opened for pasting. If the copy silently fails the
+// visitor arrives at an empty search box with nothing to paste, so what is
+// actually checked here is that something reached the clipboard.
+{
+  const context = await browser.newContext({
+    viewport: { width: 900, height: 1100 },
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/collection`);
+  await addCard(page, "Aaron Judge", { set: "Topps Chrome", year: "2024" });
+
+  await page.click(".catalog-card");
+  await page.waitForSelector(".comp-panel");
+  const shown = (await page.locator("#compTerms").textContent()).trim();
+  check("the search terms are shown, not hidden in a link", shown, "2024 Topps Chrome Aaron Judge");
+  check("130point is offered",
+    await page.locator('.comp-panel a[href*="130point.com"]').count(), 1);
+  check("it opens in a new tab rather than losing the collection",
+    await page.locator('.comp-panel a[href*="130point.com"]').getAttribute("target"), "_blank");
+  check("eBay is kept as a fallback",
+    await page.locator('.comp-panel a[href*="ebay.com"]').count(), 1);
+
+  await page.locator(".copy-terms").click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  check("the terms reach the clipboard", copied, "2024 Topps Chrome Aaron Judge");
+  check("the button says so",
+    (await page.locator(".copy-terms").textContent()).includes("Copied"), true);
+  // The label has to come back, or a second card cannot be copied.
+  await page.waitForFunction(() =>
+    document.querySelector(".copy-terms").textContent.includes("Copy search terms"));
+  check("and goes back to its label", true, true);
+
+  await page.keyboard.press("Escape");
+
+  // The same pair on the grid, where prices are actually set.
+  await page.click("#priceMode");
+  await page.waitForSelector(".comp-copy");
+  await page.evaluate(() => navigator.clipboard.writeText("nothing"));
+  await page.locator(".comp-copy").first().click();
+  const fromGrid = await page.evaluate(() => navigator.clipboard.readText());
+  check("copying works from the pricing grid too", fromGrid, "2024 Topps Chrome Aaron Judge");
+  // Tapping either action must not open the card underneath.
+  check("copying does not open the card", await page.locator("#modal").isVisible(), false);
+  check("no errors around the lookup", errors, []);
+  await context.close();
+}
+
+// --- Leaving -----------------------------------------------------------------
+// Somebody who cannot delete their account is stuck with it, and export alone
+// is not a way out. The safeguard is typing the word, so most of this is about
+// what happens when it is not typed.
+{
+  backend.cards = [
+    { id: "aaaaaaaa-8888-4888-8888-888888888881", user_id: USER.id, player: "Aaron Judge",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1,
+      front_image_path: `${USER.id}/one-front.jpg`, back_image_path: `${USER.id}/one-back.jpg` },
+  ];
+  backend.profiles = [{ user_id: USER.id, handle: "leaver", is_public: true }];
+  backend.snapshots = []; backend.noSnapshotTable = false;
+  backend.accountDeletes = 0; backend.photoDeletes = []; backend.failDelete = false;
+
+  // Deliberately not addInitScript: that reinstates the session on every
+  // navigation, so the page the user lands on after deleting would be signed
+  // in again and the check below would be testing the harness, not the app.
+  const context = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/account`);
+  await page.evaluate((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  await page.reload();
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+
+  check("the confirmation is not shown until asked",
+    await page.locator("#deleteConfirm").isVisible(), false);
+  await page.locator("#deleteAccount").click();
+  check("asking opens it", await page.locator("#deleteConfirm").isVisible(), true);
+  check("it says what will go",
+    (await page.locator("#deleteCount").textContent()).includes("1 card"), true);
+  check("the button starts dead", await page.locator("#deleteForReal").isDisabled(), true);
+
+  // The near-misses matter more than the hit: this is the only safeguard.
+  for (const typed of ["delete", "DELETE ME", "DELET"]) {
+    await page.locator("#deleteWord").fill(typed);
+    check(`"${typed}" does not arm the button`,
+      await page.locator("#deleteForReal").isDisabled(), true);
+  }
+  await page.locator("#deleteWord").fill("DELETE");
+  check("the exact word arms it", await page.locator("#deleteForReal").isDisabled(), false);
+
+  // Backing out must leave everything alone.
+  await page.locator("#deleteCancel").click();
+  check("cancelling closes it", await page.locator("#deleteConfirm").isVisible(), false);
+  check("and deletes nothing", backend.accountDeletes, 0);
+
+  await page.locator("#deleteAccount").click();
+  check("reopening clears the typed word",
+    await page.locator("#deleteWord").inputValue(), "");
+
+  await page.locator("#deleteWord").fill("DELETE");
+  await page.locator("#deleteForReal").click();
+  await page.waitForFunction(() => location.pathname === "/");
+
+  check("the account was deleted once", backend.accountDeletes, 1);
+  // Storage files hang off no cascade, so the client has to remove them.
+  check("both photos were removed", backend.photoDeletes.length, 2);
+  check("the visitor is told it worked",
+    await page.locator("#goodbye:not(.hidden)").count(), 1);
+  check("the goodbye is not left in the address bar",
+    new URL(page.url()).search, "");
+  // An empty array written back by a fresh page load is not leftover data, so
+  // this asks whether anything still holds content rather than whether a key
+  // exists at all.
+  const leftover = await page.evaluate(() =>
+    ["the-database-cards", "the-database-session", "the-database-history",
+      "the-database-outbox", "the-database-signed", "the-database-prices"]
+      .filter((k) => {
+        const raw = localStorage.getItem(k);
+        if (!raw) return false;
+        try { const v = JSON.parse(raw); return Object.keys(v || {}).length > 0; }
+        catch { return true; }
+      }));
+  check("nothing is left on the device", leftover, []);
+  check("no errors while leaving", errors, []);
+  await context.close();
+}
+
+// A failed deletion must say so rather than look like it worked.
+{
+  backend.cards = []; backend.profiles = []; backend.snapshots = [];
+  backend.accountDeletes = 0; backend.photoDeletes = []; backend.failDelete = true;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/account`);
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+  await page.locator("#deleteAccount").click();
+  await page.locator("#deleteWord").fill("DELETE");
+  await page.locator("#deleteForReal").click();
+  await page.waitForFunction(() => document.querySelector("#deleteMessage").textContent.length > 0);
+
+  check("the failure is reported",
+    (await page.locator("#deleteMessage").textContent()).length > 0, true);
+  check("the page did not pretend to leave", new URL(page.url()).pathname, "/account");
+  check("the session survives so it can be retried",
+    await page.evaluate(() => !!localStorage.getItem("the-database-session")), true);
+  check("and the button is offered again",
+    await page.locator("#deleteForReal").isDisabled(), false);
+  check("no errors on a failed delete", errors, []);
+  await context.close();
+  backend.failDelete = false;
 }
 
 // --- A collection must never contain somebody else's cards -------------------

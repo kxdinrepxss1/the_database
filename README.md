@@ -84,13 +84,22 @@ split can always be traced back to what was typed.
 
 ## Sharing a collection
 
-Nothing is public by default, and three independent switches have to line up:
+Nothing is public by default, and four independent switches have to line up:
 
 1. **The profile switch.** A collector picks a handle and turns sharing on.
    Without it nothing is visible, whatever individual cards say.
 2. **The card switch.** Each card is marked shared or not. Bulk actions on the
    account page set all of them at once.
-3. **Values.** A separate opt-in. Prices stay hidden unless it is on.
+3. **Listing.** Sharing gives you a link. Listing puts you on the public Search
+   page where strangers can find you. Somebody who shared a collection to send
+   a friend a link has not agreed to the second thing, so it is its own switch
+   and it defaults to off — including for profiles that were already public.
+4. **Values.** A separate opt-in. Prices stay hidden unless it is on.
+
+Listing is enforced by the row-level-security policy rather than by the query,
+so an unlisted profile cannot be found by asking differently. Its showcase page
+still works: that reads `public_cards`, which runs as the view's owner and
+checks the sharing switch instead.
 
 **Storage locations, purchase prices, purchase dates and notes are never
 shared, at all, by anyone.** A location plus a value describes what is worth
@@ -153,6 +162,35 @@ deliberately best-effort and are not queued through the outbox: one is a single
 point on a trend line, whereas a card is the collector's actual data. Writes are
 debounced, so a burst of price edits leaves one point rather than one per
 keystroke.
+
+## Reports
+
+The directory lists every collector who opts in, and handles are checked for
+shape but not for meaning, so nothing stops one being a slur. Every showcase
+page carries a **Report this collection** link. It works signed out on purpose:
+a visitor who is not a collector is exactly who will notice a problem first, and
+making them sign up to say so means they will not say so.
+
+Reports are insert-only. Nobody can read them back through the API, whatever
+role they hold, because a table of accusations that collectors could read would
+be worse than the thing it reports. Read them from the SQL editor, which
+bypasses row-level security:
+
+```sql
+select created_at, reported_handle, reason, detail
+from public.reports order by created_at desc limit 50;
+```
+
+To act on one, close the collection down:
+
+```sql
+update public.collector_profiles set is_public = false, is_listed = false
+where handle = 'whoever';
+```
+
+A signed-in reporter may only file as themselves and an anonymous one files as
+nobody, so a report cannot be put in somebody else's name. The app thanks the
+reporter rather than promising an outcome, because none can be guaranteed.
 
 ## Seeing what is failing
 
@@ -260,6 +298,14 @@ are rendered as soon as the rows arrive and photos are attached afterwards,
 signed in a single bulk request and cached for their lifetime. Before that,
 signing ran one request per photo in sequence and nothing rendered until it
 finished — a 100-card collection took about ten seconds to show a single card.
+
+Bandwidth is the other half. A signed URL carries a token, so reissuing one
+changes the address and the browser downloads a photo it already has. At a
+two-hour expiry a 100-card collection re-fetched its ~24MB of images every time
+somebody came back, which is about a gigabyte a month for one person. URLs now
+last a week, uploads carry a cache header, and the grid draws thumbnails rather
+than pulling full 900px photos into 300px tiles. Cards saved before thumbnails
+existed fall back to the full image and get one next time they are edited.
 
 ## Policy tests
 

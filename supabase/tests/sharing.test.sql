@@ -24,14 +24,17 @@ grant select on public.public_cards to authenticated, anon;
 grant select on public.collector_profiles to anon;
 grant select on storage.objects to authenticated, anon;
 
-delete from public.cards where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
-delete from public.collector_profiles where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
+-- Every user this file touches, including the one added at the end: a suite
+-- that only cleans up some of its rows passes once and then fails on a second
+-- run against the same database, which is the worst way to find out.
+delete from public.cards where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '77777777-7777-7777-7777-777777777777');
+delete from public.collector_profiles where user_id in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '77777777-7777-7777-7777-777777777777');
 delete from storage.objects where bucket_id = 'card-photos';
 
 -- One collector shares; the other does not.
-insert into public.collector_profiles (user_id, handle, display_name, is_public, show_values) values
-  ('11111111-1111-1111-1111-111111111111', 'sharer', 'The Sharer', true, false),
-  ('22222222-2222-2222-2222-222222222222', 'hidden', 'Stays Private', false, true);
+insert into public.collector_profiles (user_id, handle, display_name, is_public, is_listed, show_values) values
+  ('11111111-1111-1111-1111-111111111111', 'sharer', 'The Sharer', true, true, false),
+  ('22222222-2222-2222-2222-222222222222', 'hidden', 'Stays Private', false, false, true);
 
 -- The sharer marks one card public and keeps one back. Both carry the sensitive
 -- fields a public page must never reveal.
@@ -223,3 +226,119 @@ exception when check_violation then
         when others then
   raise notice 'malformed handles are rejected: PASS';
 end $$;
+
+-- === Shared is not the same as listed ===
+-- Somebody who turns sharing on to send a friend a link has not agreed to be
+-- found by strangers on a public directory page. The directory reads
+-- collector_profiles, so the policy has to hide an unlisted profile there --
+-- filtering in the query would only hide it from queries written that way.
+insert into auth.users (id, email) values
+  ('77777777-7777-7777-7777-777777777777', 'unlisted@example.com')
+on conflict do nothing;
+delete from public.cards where user_id = '77777777-7777-7777-7777-777777777777';
+delete from public.collector_profiles where user_id = '77777777-7777-7777-7777-777777777777';
+
+insert into public.collector_profiles (user_id, handle, display_name, is_public, is_listed) values
+  ('77777777-7777-7777-7777-777777777777', 'bylink', 'Link Only', true, false);
+insert into public.cards (id, user_id, player, card_set, visibility) values
+  ('77777777-0000-4000-8000-000000000001', '77777777-7777-7777-7777-777777777777',
+   'Link Only Card', 'Topps', 'public');
+
+set role anon;
+
+select 'an unlisted collector is absent from the directory: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_profiles where handle = 'bylink';
+
+-- The point of unlisted is that the link still works.
+select 'but their showcase still loads for anyone with the link: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.public_cards where handle = 'bylink';
+
+select 'a listed collector is still in the directory: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.collector_profiles where handle = 'sharer';
+
+reset role;
+
+-- Turning listing off must take them back out without unsharing them.
+update public.collector_profiles set is_listed = false
+ where user_id = '11111111-1111-1111-1111-111111111111';
+
+set role anon;
+select 'unlisting removes them from the directory: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_profiles where handle = 'sharer';
+
+select 'and leaves their shared cards reachable: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.public_cards where handle = 'sharer';
+reset role;
+
+update public.collector_profiles set is_listed = true
+ where user_id = '11111111-1111-1111-1111-111111111111';
+
+-- === Reports ===
+-- Anyone can file one; nobody can read them back. A table of accusations that
+-- collectors could read would be worse than what it reports.
+grant insert on public.reports to anon, authenticated;
+grant select on public.reports to anon, authenticated;
+
+set role anon;
+do $$
+begin
+  insert into public.reports (reported_handle, reason) values ('sharer', 'impersonation');
+  raise notice 'an anonymous visitor can file a report: PASS';
+exception when others then
+  raise notice 'an anonymous visitor can file a report: FAIL (%)', sqlerrm;
+end $$;
+
+select 'nobody can read reports back, even with select granted: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ' rows)' end
+from public.reports;
+reset role;
+
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+do $$
+begin
+  insert into public.reports (reported_handle, reason, reporter_user_id)
+  values ('sharer', 'stolen-photos', '22222222-2222-2222-2222-222222222222');
+  raise notice 'a signed-in collector can file as themselves: PASS';
+exception when others then
+  raise notice 'a signed-in collector can file as themselves: FAIL (%)', sqlerrm;
+end $$;
+
+-- Putting somebody else's name to a report would make it a way to frame them.
+do $$
+begin
+  insert into public.reports (reported_handle, reason, reporter_user_id)
+  values ('sharer', 'spite', '11111111-1111-1111-1111-111111111111');
+  raise notice 'filing a report as somebody else is blocked: FAIL';
+exception when others then
+  raise notice 'filing a report as somebody else is blocked: PASS';
+end $$;
+
+do $$
+begin
+  update public.reports set reason = 'edited';
+  raise notice 'reports cannot be edited: FAIL';
+exception when others then
+  raise notice 'reports cannot be edited: PASS';
+end $$;
+
+do $$
+begin
+  delete from public.reports;
+  raise notice 'reports cannot be deleted away: FAIL';
+exception when others then
+  raise notice 'reports cannot be deleted away: PASS';
+end $$;
+reset role;
+
+-- The SQL editor bypasses row-level security, which is how they get read.
+select 'the reports are there for an owner to read: ' ||
+  case when count(*) >= 2 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.reports;
+
+delete from public.reports;

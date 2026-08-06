@@ -61,6 +61,8 @@ create table if not exists public.cards (
   collection_status text default 'Personal collection',
   notes text,
   front_image_path text,
+  front_thumb_path text,
+  back_thumb_path text,
   back_image_path text,
   visibility text not null default 'private',
   listing_status text not null default 'not_listed',
@@ -71,6 +73,12 @@ create table if not exists public.cards (
 alter table public.cards add column if not exists storage_container text;
 alter table public.cards add column if not exists storage_section text;
 alter table public.cards add column if not exists storage_slot text;
+-- Grid tiles are drawn about 300px wide and were downloading the full 900px
+-- photo to do it. A thumbnail alongside the original cuts what a collection
+-- costs to look at by roughly five times. Cards saved before this have no
+-- thumbnail and fall back to the full image, which still works.
+alter table public.cards add column if not exists front_thumb_path text;
+alter table public.cards add column if not exists back_thumb_path text;
 
 -- Split whatever collectors already typed into the three fields, treating both
 -- "/" and "," as separators: "Binder 2, page 4" and "Box A / Row 3 / Slot 9"
@@ -136,6 +144,7 @@ create table if not exists public.collector_profiles (
   handle text unique,
   display_name text,
   is_public boolean not null default false,
+  is_listed boolean not null default false,
   show_values boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -147,6 +156,12 @@ alter table public.collector_profiles add column if not exists handle text;
 alter table public.collector_profiles add column if not exists display_name text;
 alter table public.collector_profiles add column if not exists is_public boolean not null default false;
 alter table public.collector_profiles add column if not exists show_values boolean not null default false;
+-- Sharing a collection and being listed in the directory used to be the same
+-- switch. They are not the same decision: somebody who turns sharing on to send
+-- a friend a link has not agreed to appear on a public page beside their
+-- collection's value. Defaults to off, including for profiles that were already
+-- public -- under-sharing is the safe way to get this wrong.
+alter table public.collector_profiles add column if not exists is_listed boolean not null default false;
 
 drop trigger if exists collector_profiles_touch_updated_at on public.collector_profiles;
 create trigger collector_profiles_touch_updated_at
@@ -160,11 +175,15 @@ create policy "Collectors can read their own profile"
 on public.collector_profiles for select
 using (auth.uid() = user_id);
 
--- Only the shared ones, and only ever for reading.
+-- Only the listed ones, and only ever for reading. is_listed rather than
+-- is_public on purpose: this table is what the collector directory reads, so a
+-- profile that is shared but not listed must be invisible here no matter how
+-- the query is written. Its showcase still works, because that page reads
+-- public_cards, which runs as the view's owner and checks is_public instead.
 drop policy if exists "Anyone can read shared profiles" on public.collector_profiles;
 create policy "Anyone can read shared profiles"
 on public.collector_profiles for select
-using (is_public);
+using (is_public and is_listed);
 
 drop policy if exists "Collectors can create their profile" on public.collector_profiles;
 create policy "Collectors can create their profile"
@@ -202,6 +221,7 @@ select
   c.player, c.year, c.sport, c.card_set, c.card_number,
   c.team, c.parallel, c.grade, c.quantity,
   c.front_image_path, c.back_image_path,
+  c.front_thumb_path, c.back_thumb_path,
   case when p.show_values then c.current_value else null end as current_value,
   c.created_at
 from public.cards c
@@ -323,9 +343,117 @@ create policy "Collectors can read their errors"
 on public.error_events for select
 using (auth.uid() = user_id);
 
+-- ---------------------------------------------------------------------------
+-- Reports.
+--
+-- The directory lists every collector who opts in, and handles are checked for
+-- shape but not for meaning, so nothing stops one being a slur. Somebody has to
+-- be able to say so, and until now there was no way to and nowhere to look.
+--
+-- Insert-only by design. Anyone can file one, signed in or not, because a
+-- visitor who is not a collector is exactly who will see a problem first. Nobody
+-- can read them back: reports name people, and a table of accusations that
+-- collectors could read would be worse than the thing it reports. Read them from
+-- the SQL editor, which bypasses row-level security:
+--
+--   select created_at, reported_handle, reason, detail
+--   from public.reports order by created_at desc limit 50;
+--
+-- To act on one:
+--
+--   update public.collector_profiles set is_public = false, is_listed = false
+--   where handle = 'whoever';
+-- ---------------------------------------------------------------------------
+create table if not exists public.reports (
+  id uuid primary key default gen_random_uuid(),
+  reported_handle text not null,
+  reason text not null,
+  detail text,
+  reporter_user_id uuid references auth.users(id) on delete set null,
+  app_version text,
+  created_at timestamptz not null default now(),
+  -- Bounded so a report cannot be used to write a novel into the table.
+  constraint reports_handle_length check (char_length(reported_handle) between 1 and 64),
+  constraint reports_reason_length check (char_length(reason) between 1 and 64),
+  constraint reports_detail_length check (detail is null or char_length(detail) <= 600)
+);
+
+create index if not exists reports_created_idx on public.reports (created_at desc);
+
+alter table public.reports enable row level security;
+
+drop policy if exists "Anyone can file a report" on public.reports;
+create policy "Anyone can file a report"
+on public.reports for insert
+with check (
+  -- A signed-in reporter may only file as themselves; an anonymous one files
+  -- as nobody. Neither can put somebody else's name to a report.
+  reporter_user_id is null or reporter_user_id = auth.uid()
+);
+
+-- Deliberately no select, update or delete policy. Without one, nobody reads
+-- these back through the API, whatever role they hold.
+
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'grant insert on public.reports to anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant insert on public.reports to authenticated';
+  end if;
+end $$;
+
 -- Housekeeping: these grow forever. Run occasionally, or schedule with pg_cron.
 --   delete from public.error_events where created_at < now() - interval '90 days';
 --   delete from public.scan_events  where created_at < now() - interval '90 days';
+
+-- ---------------------------------------------------------------------------
+-- Leaving.
+--
+-- Every table above hangs off auth.users with "on delete cascade", so removing
+-- that one row removes the collection, the profile, the value history, the scan
+-- counter and the error reports together. Nothing else has to be kept in step,
+-- which is the point of doing it this way.
+--
+-- Deleting a user is normally an admin-API call needing the service-role key,
+-- and that key must never go near this app -- it bypasses every rule in this
+-- file. A security-definer function avoids it entirely. This one takes no
+-- arguments and reads auth.uid() itself, so a caller cannot name somebody else
+-- to delete: the only account reachable through it is the caller's own.
+-- ---------------------------------------------------------------------------
+create or replace function public.delete_own_account()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+begin
+  if me is null then
+    raise exception 'delete_own_account requires a signed-in user';
+  end if;
+
+  -- Storage rows do not hang off auth.users, so they are removed explicitly.
+  -- The client deletes the files first; this catches whatever it could not.
+  delete from storage.objects
+   where bucket_id = 'card-photos'
+     and (storage.foldername(name))[1] = me::text;
+
+  delete from auth.users where id = me;
+end;
+$$;
+
+-- Signed in only, and never inherited by anonymous callers.
+revoke all on function public.delete_own_account() from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on function public.delete_own_account() from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant execute on function public.delete_own_account() to authenticated';
+  end if;
+end $$;
 
 insert into storage.buckets (id, name, public)
 values ('card-photos', 'card-photos', false)
@@ -352,7 +480,8 @@ as $$
     join public.collector_profiles p on p.user_id = c.user_id
     where p.is_public
       and c.visibility = 'public'
-      and (c.front_image_path = object_name or c.back_image_path = object_name)
+      and object_name in (c.front_image_path, c.back_image_path,
+                          c.front_thumb_path, c.back_thumb_path)
   );
 $$;
 
@@ -435,7 +564,7 @@ begin
     where (
         (p.schemaname = 'public'
          and p.tablename in ('cards','collector_profiles','scan_events',
-                             'collection_snapshots','error_events'))
+                             'collection_snapshots','error_events','reports'))
         or (p.schemaname = 'storage' and p.tablename = 'objects'
             and coalesce(p.qual, '') || coalesce(p.with_check, '') like '%card-photos%')
       )
@@ -456,6 +585,7 @@ begin
         'Collectors can clear their value history',
         'Collectors can record their errors',
         'Collectors can read their errors',
+        'Anyone can file a report',
         'Anyone can read photos of shared cards',
         'Collectors can read their card photos',
         'Collectors can upload their card photos',
@@ -493,6 +623,7 @@ begin
   for rec in
     select * from (values
       ('cards','user_id'), ('cards','visibility'), ('cards','current_value'),
+      ('cards','front_thumb_path'), ('cards','back_thumb_path'),
       ('cards','storage_container'), ('cards','storage_section'), ('cards','storage_slot'),
       ('collector_profiles','user_id'), ('collector_profiles','handle'),
       ('collector_profiles','display_name'), ('collector_profiles','is_public'),
@@ -500,6 +631,7 @@ begin
       ('collection_snapshots','user_id'), ('collection_snapshots','total'),
       ('scan_events','user_id'),
       ('error_events','user_id'), ('error_events','app_version'),
+      ('reports','reported_handle'), ('reports','reason'),
       ('public_cards','handle'), ('public_cards','player'), ('public_cards','current_value'),
       ('public_cards','front_image_path')
     ) as t(relname, colname)
@@ -529,6 +661,18 @@ begin
     problems := problems || 'missing: public.is_shared_card_photo()';
   end if;
 
+  if not exists (select 1 from pg_proc where proname = 'delete_own_account') then
+    problems := problems || 'missing: public.delete_own_account()';
+  end if;
+
+  -- It takes no arguments on purpose. One that accepted a user id would be a
+  -- way for any signed-in caller to delete anybody.
+  if exists (
+    select 1 from pg_proc where proname = 'delete_own_account' and pronargs > 0
+  ) then
+    problems := problems || 'public.delete_own_account() must take no arguments';
+  end if;
+
   if not exists (
     select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects'
       and policyname = 'Anyone can read photos of shared cards'
@@ -540,7 +684,7 @@ begin
   -- the table is simply open, and every rule above becomes decoration.
   for rec in
     select unnest(array['cards','collector_profiles','scan_events',
-                        'collection_snapshots','error_events']) as relname
+                        'collection_snapshots','error_events','reports']) as relname
   loop
     if not exists (
       select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
