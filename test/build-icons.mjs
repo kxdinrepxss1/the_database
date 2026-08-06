@@ -80,6 +80,19 @@ const built = await page.evaluate(async ({ src, LIME, ACCENT, INK, sizes }) => {
   }
   sctx.putImageData(frame, 0, 0);
 
+  // --- Close the B ---------------------------------------------------------
+  // The artwork draws the B with no left stem at all: both counters run open
+  // into the gap beside the D. Measured across the letter, every row through a
+  // counter carries accent only on the right-hand side. That is what makes it
+  // read "D3" rather than "DB", and it does it at every size, worst at 32px.
+  //
+  // A stem the same weight as the letter's other strokes (~54px in this
+  // artwork) closes both counters and leaves them 89px wide, matching the D's
+  // counter. It sits inside the letter's existing left edge, so the chamfers
+  // at the top and bottom corners survive untouched.
+  sctx.fillStyle = `rgb(${ACCENT[0]},${ACCENT[1]},${ACCENT[2]})`;
+  sctx.fillRect(674, 384, 54, 691 - 384 + 1);
+
   // --- Find the mark, and the letters inside it ----------------------------
   const px = sctx.getImageData(0, 0, source.width, source.height).data;
   const ink = (x, y) => {
@@ -201,7 +214,9 @@ const built = await page.evaluate(async ({ src, LIME, ACCENT, INK, sizes }) => {
     const region = opts.letters ? letters : mark;
     out[name] = compose(size, region, opts.fill, opts.rounded !== false).split(",")[1];
   }
-  return { out, mark, letters, bands };
+  // The whole recoloured, corrected artwork, so the changes above exist as a
+  // file somebody can open rather than only as pixels inside the Worker.
+  return { out, mark, letters, bands, corrected: source.toDataURL("image/png") };
 }, {
   src: "data:image/png;base64," + readFileSync(SOURCE).toString("base64"),
   LIME, ACCENT, INK,
@@ -217,6 +232,9 @@ const built = await page.evaluate(async ({ src, LIME, ACCENT, INK, sizes }) => {
 });
 
 await browser.close();
+
+writeFileSync(new URL("../brand/logo-app.png", import.meta.url),
+  Buffer.from(built.corrected.split(",")[1], "base64"));
 
 console.log(`mark    x ${built.mark.left}-${built.mark.right}  y ${built.mark.top}-${built.mark.bottom}`);
 console.log(`letters x ${built.letters.left}-${built.letters.right}  y ${built.letters.top}-${built.letters.bottom}`);
