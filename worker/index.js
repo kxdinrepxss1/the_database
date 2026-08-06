@@ -589,9 +589,11 @@ const page = (route, env, handle = "") => `<!doctype html>
       if(days===1)return 'yesterday';
       if(days<7)return days+' days ago';
       if(days<14)return 'last week';
-      if(days<60)return Math.floor(days/7)+' weeks ago';
-      if(days<365)return Math.floor(days/30)+' months ago';
-      return 'over a year ago';
+      if(days<30)return Math.floor(days/7)+' weeks ago';
+      // Past a month the date says more than the arithmetic does, and counting
+      // months out loud starts to read like an accusation. Locale is left to
+      // the device, so this is a date the reader already knows how to parse.
+      return new Date(then).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});
     }
     const isFresh = iso => !!iso && (Date.now()-new Date(iso).getTime())<FRESH_DAYS*DAY;
     // PostgREST filters are a small language of their own, so a blacklist of

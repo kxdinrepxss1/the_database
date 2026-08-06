@@ -972,8 +972,12 @@ const PUBLIC_ROWS = [
   check("they are flagged as recently active",
     await page.locator(".collector-card").first().locator(".fresh-dot").count(), 1);
 
+  // Past a month it becomes a date rather than a count, which reads as
+  // information instead of a verdict on how long someone has been away.
   const stale = await page.locator(".collector-card").last().textContent();
-  check("a dormant collection says so", stale.includes("over a year ago"), true);
+  const staleYear = String(new Date(Date.now() - 400 * 86400000).getFullYear());
+  check("a dormant collection shows a date", stale.includes(staleYear), true);
+  check("and does not count the months", /months? ago|year/.test(stale), false);
   check("and carries no recent flag",
     await page.locator(".collector-card").last().locator(".fresh-dot").count(), 0);
   check("recency costs no extra request", backend.publicQueries.length, 1);
