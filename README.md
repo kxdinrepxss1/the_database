@@ -84,13 +84,22 @@ split can always be traced back to what was typed.
 
 ## Sharing a collection
 
-Nothing is public by default, and three independent switches have to line up:
+Nothing is public by default, and four independent switches have to line up:
 
 1. **The profile switch.** A collector picks a handle and turns sharing on.
    Without it nothing is visible, whatever individual cards say.
 2. **The card switch.** Each card is marked shared or not. Bulk actions on the
    account page set all of them at once.
-3. **Values.** A separate opt-in. Prices stay hidden unless it is on.
+3. **Listing.** Sharing gives you a link. Listing puts you on the public Search
+   page where strangers can find you. Somebody who shared a collection to send
+   a friend a link has not agreed to the second thing, so it is its own switch
+   and it defaults to off — including for profiles that were already public.
+4. **Values.** A separate opt-in. Prices stay hidden unless it is on.
+
+Listing is enforced by the row-level-security policy rather than by the query,
+so an unlisted profile cannot be found by asking differently. Its showcase page
+still works: that reads `public_cards`, which runs as the view's owner and
+checks the sharing switch instead.
 
 **Storage locations, purchase prices, purchase dates and notes are never
 shared, at all, by anyone.** A location plus a value describes what is worth
@@ -260,6 +269,14 @@ are rendered as soon as the rows arrive and photos are attached afterwards,
 signed in a single bulk request and cached for their lifetime. Before that,
 signing ran one request per photo in sequence and nothing rendered until it
 finished — a 100-card collection took about ten seconds to show a single card.
+
+Bandwidth is the other half. A signed URL carries a token, so reissuing one
+changes the address and the browser downloads a photo it already has. At a
+two-hour expiry a 100-card collection re-fetched its ~24MB of images every time
+somebody came back, which is about a gigabyte a month for one person. URLs now
+last a week, uploads carry a cache header, and the grid draws thumbnails rather
+than pulling full 900px photos into 300px tiles. Cards saved before thumbnails
+existed fall back to the full image and get one next time they are edited.
 
 ## Policy tests
 

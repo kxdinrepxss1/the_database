@@ -84,7 +84,11 @@ async function supabase(req, url, body) {
     if (req.method === "GET") {
       if (url.search.includes("is_public=eq.true")) {
         backend.collectorQueries.push(url.search);
-        let rows = backend.publicProfiles;
+        // In the real database this is enforced by the policy, not the query.
+        // Honouring it here means a client that stopped asking would be caught.
+        let rows = url.search.includes("is_listed=eq.true")
+          ? backend.publicProfiles.filter((p) => p.is_listed !== false)
+          : backend.publicProfiles;
         const or = (url.search.match(/or=\(([^)]*)\)/) || [])[1] || "";
         if (or) {
           const term = decodeURIComponent((or.match(/handle\.ilike\.([^,]*)/) || [])[1] || "")
@@ -782,6 +786,30 @@ const queued = (page) => page.evaluate(() =>
   check("the public link is shown",
     (await page.locator("#shareUrl").textContent()).includes("/c/kadin"), true);
 
+  // Sharing and being listed are separate decisions. Sharing on its own gives
+  // a link; it must not put somebody on a public page beside their own
+  // collection's value without them saying so.
+  check("listing starts off", await page.locator("#shareListed").isChecked(), false);
+  check("sharing alone does not list", backend.profiles[0].is_listed, false);
+  check("and the app says the link is the only way in",
+    (await page.locator("#shareMessage").textContent()).includes("link"), true);
+
+  await page.check("#shareListed");
+  await page.click("#saveShare");
+  await page.waitForTimeout(500);
+  check("ticking it lists them", backend.profiles[0].is_listed, true);
+  check("and it stays shared", backend.profiles[0].is_public, true);
+
+  // Listing an unshared collection would put an empty page in the directory.
+  await page.uncheck("#sharePublic");
+  await page.click("#saveShare");
+  await page.waitForTimeout(500);
+  check("unsharing also unlists", backend.profiles[0].is_listed, false);
+
+  await page.check("#sharePublic");
+  await page.click("#saveShare");
+  await page.waitForTimeout(500);
+
   // Bulk sharing goes out as one request, not one per card.
   await page.click("#shareAll");
   await page.waitForTimeout(400);
@@ -846,8 +874,10 @@ const PUBLIC_ROWS = [
   backend.publicCards = PUBLIC_ROWS; backend.publicQueries = []; backend.signCalls = 0;
   backend.collectorQueries = [];
   backend.publicProfiles = [
-    { handle: "kadin", display_name: "Kadin R" },
-    { handle: "someone", display_name: "Someone Else" },
+    { handle: "kadin", display_name: "Kadin R", is_listed: true },
+    { handle: "someone", display_name: "Someone Else", is_listed: true },
+    // Shared by link, but not listed. The directory must not show them.
+    { handle: "bylink", display_name: "Link Only", is_listed: false },
   ];
   const { context, page, errors } = await open("/search");
 
@@ -895,6 +925,8 @@ const PUBLIC_ROWS = [
     (await page.locator("#publicGrid .price-tag strong").first().textContent()).trim(), "$450.00");
 
   // Searching reads the public view and nothing else.
+  check("the directory asks for listed profiles, not merely shared",
+    backend.collectorQueries.every((q) => q.includes("is_listed=eq.true")), true);
   check("collector search only ever asks for shared profiles",
     backend.collectorQueries.every((q) => q.includes("is_public=eq.true")), true);
 

@@ -144,6 +144,7 @@ create table if not exists public.collector_profiles (
   handle text unique,
   display_name text,
   is_public boolean not null default false,
+  is_listed boolean not null default false,
   show_values boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -155,6 +156,12 @@ alter table public.collector_profiles add column if not exists handle text;
 alter table public.collector_profiles add column if not exists display_name text;
 alter table public.collector_profiles add column if not exists is_public boolean not null default false;
 alter table public.collector_profiles add column if not exists show_values boolean not null default false;
+-- Sharing a collection and being listed in the directory used to be the same
+-- switch. They are not the same decision: somebody who turns sharing on to send
+-- a friend a link has not agreed to appear on a public page beside their
+-- collection's value. Defaults to off, including for profiles that were already
+-- public -- under-sharing is the safe way to get this wrong.
+alter table public.collector_profiles add column if not exists is_listed boolean not null default false;
 
 drop trigger if exists collector_profiles_touch_updated_at on public.collector_profiles;
 create trigger collector_profiles_touch_updated_at
@@ -168,11 +175,15 @@ create policy "Collectors can read their own profile"
 on public.collector_profiles for select
 using (auth.uid() = user_id);
 
--- Only the shared ones, and only ever for reading.
+-- Only the listed ones, and only ever for reading. is_listed rather than
+-- is_public on purpose: this table is what the collector directory reads, so a
+-- profile that is shared but not listed must be invisible here no matter how
+-- the query is written. Its showcase still works, because that page reads
+-- public_cards, which runs as the view's owner and checks is_public instead.
 drop policy if exists "Anyone can read shared profiles" on public.collector_profiles;
 create policy "Anyone can read shared profiles"
 on public.collector_profiles for select
-using (is_public);
+using (is_public and is_listed);
 
 drop policy if exists "Collectors can create their profile" on public.collector_profiles;
 create policy "Collectors can create their profile"

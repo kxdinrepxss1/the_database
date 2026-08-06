@@ -29,9 +29,9 @@ delete from public.collector_profiles where user_id in ('11111111-1111-1111-1111
 delete from storage.objects where bucket_id = 'card-photos';
 
 -- One collector shares; the other does not.
-insert into public.collector_profiles (user_id, handle, display_name, is_public, show_values) values
-  ('11111111-1111-1111-1111-111111111111', 'sharer', 'The Sharer', true, false),
-  ('22222222-2222-2222-2222-222222222222', 'hidden', 'Stays Private', false, true);
+insert into public.collector_profiles (user_id, handle, display_name, is_public, is_listed, show_values) values
+  ('11111111-1111-1111-1111-111111111111', 'sharer', 'The Sharer', true, true, false),
+  ('22222222-2222-2222-2222-222222222222', 'hidden', 'Stays Private', false, false, true);
 
 -- The sharer marks one card public and keeps one back. Both carry the sensitive
 -- fields a public page must never reveal.
@@ -223,3 +223,54 @@ exception when check_violation then
         when others then
   raise notice 'malformed handles are rejected: PASS';
 end $$;
+
+-- === Shared is not the same as listed ===
+-- Somebody who turns sharing on to send a friend a link has not agreed to be
+-- found by strangers on a public directory page. The directory reads
+-- collector_profiles, so the policy has to hide an unlisted profile there --
+-- filtering in the query would only hide it from queries written that way.
+insert into auth.users (id, email) values
+  ('77777777-7777-7777-7777-777777777777', 'unlisted@example.com')
+on conflict do nothing;
+delete from public.cards where user_id = '77777777-7777-7777-7777-777777777777';
+delete from public.collector_profiles where user_id = '77777777-7777-7777-7777-777777777777';
+
+insert into public.collector_profiles (user_id, handle, display_name, is_public, is_listed) values
+  ('77777777-7777-7777-7777-777777777777', 'bylink', 'Link Only', true, false);
+insert into public.cards (id, user_id, player, card_set, visibility) values
+  ('77777777-0000-4000-8000-000000000001', '77777777-7777-7777-7777-777777777777',
+   'Link Only Card', 'Topps', 'public');
+
+set role anon;
+
+select 'an unlisted collector is absent from the directory: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_profiles where handle = 'bylink';
+
+-- The point of unlisted is that the link still works.
+select 'but their showcase still loads for anyone with the link: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.public_cards where handle = 'bylink';
+
+select 'a listed collector is still in the directory: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.collector_profiles where handle = 'sharer';
+
+reset role;
+
+-- Turning listing off must take them back out without unsharing them.
+update public.collector_profiles set is_listed = false
+ where user_id = '11111111-1111-1111-1111-111111111111';
+
+set role anon;
+select 'unlisting removes them from the directory: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_profiles where handle = 'sharer';
+
+select 'and leaves their shared cards reachable: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.public_cards where handle = 'sharer';
+reset role;
+
+update public.collector_profiles set is_listed = true
+ where user_id = '11111111-1111-1111-1111-111111111111';
