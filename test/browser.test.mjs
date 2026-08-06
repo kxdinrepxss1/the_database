@@ -1006,6 +1006,58 @@ const PUBLIC_ROWS = [
   await showcase.context.close();
 }
 
+// --- Sold-price lookup --------------------------------------------------------
+// 130point takes no search term in its address, so the terms go to the
+// clipboard and the site is opened for pasting. If the copy silently fails the
+// visitor arrives at an empty search box with nothing to paste, so what is
+// actually checked here is that something reached the clipboard.
+{
+  const context = await browser.newContext({
+    viewport: { width: 900, height: 1100 },
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/collection`);
+  await addCard(page, "Aaron Judge", { set: "Topps Chrome", year: "2024" });
+
+  await page.click(".catalog-card");
+  await page.waitForSelector(".comp-panel");
+  const shown = (await page.locator("#compTerms").textContent()).trim();
+  check("the search terms are shown, not hidden in a link", shown, "2024 Topps Chrome Aaron Judge");
+  check("130point is offered",
+    await page.locator('.comp-panel a[href*="130point.com"]').count(), 1);
+  check("it opens in a new tab rather than losing the collection",
+    await page.locator('.comp-panel a[href*="130point.com"]').getAttribute("target"), "_blank");
+  check("eBay is kept as a fallback",
+    await page.locator('.comp-panel a[href*="ebay.com"]').count(), 1);
+
+  await page.locator(".copy-terms").click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  check("the terms reach the clipboard", copied, "2024 Topps Chrome Aaron Judge");
+  check("the button says so",
+    (await page.locator(".copy-terms").textContent()).includes("Copied"), true);
+  // The label has to come back, or a second card cannot be copied.
+  await page.waitForFunction(() =>
+    document.querySelector(".copy-terms").textContent.includes("Copy search terms"));
+  check("and goes back to its label", true, true);
+
+  await page.keyboard.press("Escape");
+
+  // The same pair on the grid, where prices are actually set.
+  await page.click("#priceMode");
+  await page.waitForSelector(".comp-copy");
+  await page.evaluate(() => navigator.clipboard.writeText("nothing"));
+  await page.locator(".comp-copy").first().click();
+  const fromGrid = await page.evaluate(() => navigator.clipboard.readText());
+  check("copying works from the pricing grid too", fromGrid, "2024 Topps Chrome Aaron Judge");
+  // Tapping either action must not open the card underneath.
+  check("copying does not open the card", await page.locator("#modal").isVisible(), false);
+  check("no errors around the lookup", errors, []);
+  await context.close();
+}
+
 // --- Leaving -----------------------------------------------------------------
 // Somebody who cannot delete their account is stuck with it, and export alone
 // is not a way out. The safeguard is typing the word, so most of this is about
