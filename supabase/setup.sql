@@ -61,6 +61,8 @@ create table if not exists public.cards (
   collection_status text default 'Personal collection',
   notes text,
   front_image_path text,
+  front_thumb_path text,
+  back_thumb_path text,
   back_image_path text,
   visibility text not null default 'private',
   listing_status text not null default 'not_listed',
@@ -71,6 +73,12 @@ create table if not exists public.cards (
 alter table public.cards add column if not exists storage_container text;
 alter table public.cards add column if not exists storage_section text;
 alter table public.cards add column if not exists storage_slot text;
+-- Grid tiles are drawn about 300px wide and were downloading the full 900px
+-- photo to do it. A thumbnail alongside the original cuts what a collection
+-- costs to look at by roughly five times. Cards saved before this have no
+-- thumbnail and fall back to the full image, which still works.
+alter table public.cards add column if not exists front_thumb_path text;
+alter table public.cards add column if not exists back_thumb_path text;
 
 -- Split whatever collectors already typed into the three fields, treating both
 -- "/" and "," as separators: "Binder 2, page 4" and "Box A / Row 3 / Slot 9"
@@ -202,6 +210,7 @@ select
   c.player, c.year, c.sport, c.card_set, c.card_number,
   c.team, c.parallel, c.grade, c.quantity,
   c.front_image_path, c.back_image_path,
+  c.front_thumb_path, c.back_thumb_path,
   case when p.show_values then c.current_value else null end as current_value,
   c.created_at
 from public.cards c
@@ -400,7 +409,8 @@ as $$
     join public.collector_profiles p on p.user_id = c.user_id
     where p.is_public
       and c.visibility = 'public'
-      and (c.front_image_path = object_name or c.back_image_path = object_name)
+      and object_name in (c.front_image_path, c.back_image_path,
+                          c.front_thumb_path, c.back_thumb_path)
   );
 $$;
 
@@ -541,6 +551,7 @@ begin
   for rec in
     select * from (values
       ('cards','user_id'), ('cards','visibility'), ('cards','current_value'),
+      ('cards','front_thumb_path'), ('cards','back_thumb_path'),
       ('cards','storage_container'), ('cards','storage_section'), ('cards','storage_slot'),
       ('collector_profiles','user_id'), ('collector_profiles','handle'),
       ('collector_profiles','display_name'), ('collector_profiles','is_public'),

@@ -129,9 +129,11 @@ console.log(`\nrender() per call           ${renderMs.toFixed(1)} ms  (runs on e
 // Navigating between tabs is a full page load in this app.
 const navStart = Date.now();
 Object.keys(counts).forEach((k) => delete counts[k]);
-await page.click('.mobile-nav a[href="/pricing"]');
+// Search replaced Pricing in the nav; this had been clicking a link that no
+// longer exists, so the benchmark ended in a timeout nobody saw.
+await page.click('.mobile-nav a[href="/search"]');
 await page.waitForTimeout(2500);
-console.log(`\nnavigating Collection -> Pricing took ${Date.now() - navStart} ms and repeated:`);
+console.log(`\nnavigating Collection -> Search took ${Date.now() - navStart} ms and repeated:`);
 for (const [k, v] of Object.entries(counts).sort((a, b) => b[1] - a[1])) console.log(`  ${k.padEnd(24)} ${v}`);
 
 await browser.close();

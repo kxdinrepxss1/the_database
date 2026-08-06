@@ -39,12 +39,16 @@ async function supabase(req, url, body) {
   }
   if (url.pathname.startsWith("/storage/v1/object/sign/")) {
     let parsed = {}; try { parsed = JSON.parse(body || "{}"); } catch {}
+    // The signed URL names the file it points at, so a test can tell whether
+    // the page asked for a thumbnail or the full photo. Real signed URLs do
+    // the same; they carry the object path plus a token.
+    const sign = (path) => "/photo.jpg?p=" + encodeURIComponent(path) + "&token=x";
     if (Array.isArray(parsed.paths)) {
       backend.signCalls++;
-      return [200, parsed.paths.map((path) => ({ path, signedURL: "/photo.jpg?token=x" }))];
+      return [200, parsed.paths.map((path) => ({ path, signedURL: sign(path) }))];
     }
     backend.signCalls++;
-    return [200, { signedURL: "/photo.jpg?token=x" }];
+    return [200, { signedURL: sign(url.pathname.replace("/storage/v1/object/sign/card-photos/", "")) }];
   }
   if (url.pathname.startsWith("/storage/v1/")) return [200, {}];
   if (url.pathname === "/rest/v1/collection_snapshots") {
@@ -1004,6 +1008,65 @@ const PUBLIC_ROWS = [
     await showcase.page.locator("#showcaseGrid .fresh").count(), 1);
   check("no errors on the showcase", showcase.errors, []);
   await showcase.context.close();
+}
+
+// --- Photo bandwidth ----------------------------------------------------------
+// Signed URLs expire, and when one is reissued its token changes, so the
+// browser treats the photo as a new file and downloads it again. At two hours
+// that meant a hundred-card collection re-fetching 24MB of images two or three
+// times a day, which is most of a free tier for one person.
+{
+  backend.cards = Array.from({ length: 6 }, (_, i) => ({
+    id: `bbbbbbbb-9999-4999-8999-99999999999${i}`, user_id: USER.id,
+    player: `Player ${i}`, year: 2024, card_set: "Topps", parallel: "Base",
+    grade: "Raw", quantity: 1,
+    front_image_path: `${USER.id}/${i}-front.jpg`,
+    front_thumb_path: `${USER.id}/${i}-front-thumb.jpg`,
+  }));
+  backend.snapshots = []; backend.noSnapshotTable = false; backend.signCalls = 0;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/collection`);
+  await page.waitForFunction(() => document.querySelectorAll("#grid .card-photo").length > 0);
+
+  // The grid draws tiles about 300px wide. Asking for the full photo there is
+  // the whole cost problem.
+  const gridSources = await page.evaluate(() =>
+    [...document.querySelectorAll("#grid .card-photo")].map((i) => i.getAttribute("src")));
+  check("every tile draws the thumbnail",
+    gridSources.every((src) => src.includes("-front-thumb.jpg")), true);
+  check("no tile draws the full photo",
+    gridSources.some((src) => /\d-front\.jpg/.test(src)), false);
+
+  // The detail view is where somebody actually looks at the card.
+  await page.click(".catalog-card");
+  await page.waitForSelector(".detail-art .card-photo");
+  const detail = await page.locator(".detail-art .card-photo").getAttribute("src");
+  check("the card itself opens the full photo", detail.includes("-front-thumb.jpg"), false);
+  await page.keyboard.press("Escape");
+
+  // A cached URL must survive a reload, or the cache is doing nothing.
+  const before = backend.signCalls;
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll("#grid .card-photo").length > 0);
+  check("a reload signs nothing again", backend.signCalls, before);
+
+  const cached = await page.evaluate(() =>
+    Object.values(JSON.parse(localStorage.getItem("the-database-signed") || "{}"))
+      .map((v) => v.expires));
+  const days = (Math.min(...cached) - Date.now()) / 86400000;
+  check("signed URLs are kept for days, not hours", days > 5, true);
+  check("no errors while loading photos", errors, []);
+  await context.close();
 }
 
 // --- Sold-price lookup --------------------------------------------------------
