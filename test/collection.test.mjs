@@ -134,5 +134,68 @@ check("zero", money(0), "$0.00");
 check("negative amounts put the sign before the symbol", money(-500), "-$500.00");
 check("small negatives", money(-0.25), "-$0.25");
 
+
+// --- eBay comp queries -------------------------------------------------------
+// The link is only worth having if the search behind it returns the right card.
+// Everything here is about what must NOT reach the query: the fields carry
+// placeholders that are also real words, and searching for them matches
+// listings that happen to contain them.
+const compSrc = slice("const compTerms", "const publicTile");
+const { compTerms, ebay } = new Function(compSrc + "; return {compTerms,ebay};")();
+
+check("a graded parallel keeps every useful term",
+  compTerms({ year: 2024, set: "Topps Chrome", player: "Aaron Judge",
+    number: "#1", parallel: "Refractor", grade: "PSA 9" }),
+  "2024 Topps Chrome Aaron Judge #1 Refractor PSA 9");
+
+check("Base is dropped, since it means no parallel",
+  compTerms({ year: 2024, set: "Topps", player: "Juan Soto", number: "50",
+    parallel: "Base", grade: "PSA 10" }),
+  "2024 Topps Juan Soto 50 PSA 10");
+
+check("Raw is dropped, since it means no grade",
+  compTerms({ year: 2024, set: "Topps", player: "Juan Soto", number: "50",
+    parallel: "Refractor", grade: "Raw" }),
+  "2024 Topps Juan Soto 50 Refractor");
+
+check("Ungraded is dropped too",
+  compTerms({ year: 2024, set: "Topps", player: "Juan Soto", grade: "Ungraded" }),
+  "2024 Topps Juan Soto");
+
+check("the em dash placeholder never reaches the query",
+  compTerms({ year: 2024, set: "Topps", player: "Juan Soto", number: "—",
+    parallel: "Base", grade: "Raw" }),
+  "2024 Topps Juan Soto");
+
+check("a plain hyphen is not a card number either",
+  compTerms({ year: 2024, set: "Topps", player: "Juan Soto", number: "-" }),
+  "2024 Topps Juan Soto");
+
+check("missing fields leave no double spaces",
+  compTerms({ player: "Juan Soto", set: "", year: "", number: "", parallel: "", grade: "" }),
+  "Juan Soto");
+
+check("null and undefined are survivable",
+  compTerms({ year: null, set: undefined, player: "Juan Soto" }),
+  "Juan Soto");
+
+check("case does not matter for the placeholders",
+  compTerms({ player: "Juan Soto", parallel: "base", grade: "raw" }),
+  "Juan Soto");
+
+// A parallel that merely starts with "base" is a real parallel.
+check("Base Refractor is a real parallel and stays",
+  compTerms({ year: 2024, set: "Topps", player: "Juan Soto", parallel: "Base Refractor" }),
+  "2024 Topps Juan Soto Base Refractor");
+
+const url = ebay({ year: 2024, set: "Topps Chrome", player: "Aaron Judge",
+  number: "#1", parallel: "Refractor", grade: "PSA 9" });
+check("the link asks for completed sales only",
+  url.includes("LH_Sold=1") && url.includes("LH_Complete=1"), true);
+check("the query is encoded", url.includes("_nkw=2024%20Topps%20Chrome") ||
+  url.includes("_nkw=2024+Topps+Chrome"), true);
+check("no stray placeholder survives into the url",
+  /Base|Raw|%E2%80%94/.test(url), false);
+
 console.log(failed ? "\nFAILED" : "\nAll collection checks passed");
 process.exit(failed ? 1 : 0);
