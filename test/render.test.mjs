@@ -102,5 +102,38 @@ check("no stale lime variable", /--lime/.test(withoutAi), false);
 check("no stale lime hex", /caff3d/i.test(withoutAi), false);
 check("accent used via the variable", withoutAi.includes("var(--accent)"), true);
 
+// --- App icons ---------------------------------------------------------------
+// The manifest used to carry no icons at all, so installing produced a
+// screenshot of the page, and /favicon.ico 404'd on every single page load.
+const manifest = await (await worker.fetch(new Request("https://x/manifest.webmanifest"), env)).json();
+check("the manifest declares icons", (manifest.icons || []).length, 3);
+check("one of them is maskable",
+  (manifest.icons || []).some((i) => i.purpose === "maskable"), true);
+check("a 512 icon is offered",
+  (manifest.icons || []).some((i) => i.sizes === "512x512" && i.purpose === "any"), true);
+
+for (const icon of manifest.icons || []) {
+  const res = await worker.fetch(new Request("https://x" + icon.src), env);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // The PNG magic number, so a route that quietly returns HTML is caught.
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  check(`${icon.src} is a real PNG`, res.status === 200 && isPng, true);
+  check(`${icon.src} is not empty`, bytes.length > 500, true);
+}
+
+for (const [path, type] of [
+  ["/favicon.ico", "image/png"],
+  ["/apple-touch-icon.png", "image/png"],
+  ["/icon.svg", "image/svg+xml"],
+]) {
+  const res = await worker.fetch(new Request("https://x" + path), env);
+  check(`${path} is served`, res.status, 200);
+  check(`${path} content type`, res.headers.get("content-type"), type);
+}
+
+const home = await (await worker.fetch(new Request("https://x/"), env)).text();
+check("the page links an apple touch icon", home.includes('rel="apple-touch-icon"'), true);
+check("the page links an svg icon", home.includes('href="/icon.svg"'), true);
+
 console.log(failed ? "\nFAILED" : "\nAll checks passed");
 process.exit(failed ? 1 : 0);

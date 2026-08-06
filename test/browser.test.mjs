@@ -845,8 +845,11 @@ const PUBLIC_ROWS = [
     (await page.locator("#collectorHeading").textContent()).includes("sharing right now"), true);
   check("card results are not shown without a term",
     await page.locator("#cardHeading.hidden").count(), 1);
+  // Located by handle, not by position: the directory orders by activity, so
+  // asserting on .first() would be testing the fixture's dates.
   check("a collector shows their shared card count",
-    (await page.locator(".collector-card small").first().textContent()).includes("2 shared cards"), true);
+    (await page.locator(".collector-card", { hasText: "@kadin" }).locator("small").textContent())
+      .includes("2 shared cards"), true);
 
   // Searching by collector name is the point of the page.
   await page.fill("#publicSearch", "kadin");
@@ -932,6 +935,61 @@ const PUBLIC_ROWS = [
     (await page.locator("#showcaseEmptyText").textContent()).includes("not shared any cards"), true);
   check("no errors on an unknown handle", errors, []);
   await context.close();
+}
+
+// --- Recency ------------------------------------------------------------------
+// A collection nobody has touched in a year and one added to yesterday looked
+// identical, and only one of them is worth opening. Dates are relative to now,
+// so these checks cannot rot into passing on a fixed calendar.
+{
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
+  backend.publicCards = [
+    { id: "ffffffff-7777-4777-8777-777777777771", handle: "stale", display_name: "Stale Steve",
+      player: "Old Card", year: 2020, sport: "Baseball", card_set: "Topps", card_number: "#1",
+      parallel: "Base", grade: "Raw", quantity: 1, created_at: daysAgo(400) },
+    { id: "ffffffff-7777-4777-8777-777777777772", handle: "active", display_name: "Active Amy",
+      player: "New Card", year: 2026, sport: "Baseball", card_set: "Topps", card_number: "#2",
+      parallel: "Base", grade: "Raw", quantity: 1, created_at: daysAgo(1) },
+    { id: "ffffffff-7777-4777-8777-777777777773", handle: "active", display_name: "Active Amy",
+      player: "Older Card", year: 2024, sport: "Baseball", card_set: "Topps", card_number: "#3",
+      parallel: "Base", grade: "Raw", quantity: 1, created_at: daysAgo(120) },
+  ];
+  // Deliberately listed stale-first, so ordering by activity has to be the
+  // client's doing rather than an accident of the fixture.
+  backend.publicProfiles = [
+    { handle: "stale", display_name: "Stale Steve" },
+    { handle: "active", display_name: "Active Amy" },
+  ];
+  backend.publicQueries = []; backend.collectorQueries = [];
+
+  const { context, page, errors } = await open("/search");
+  await page.waitForFunction(() => document.querySelectorAll(".collector-card").length === 2);
+
+  const first = await page.locator(".collector-card").first().textContent();
+  check("the collector who added something recently is listed first",
+    first.includes("Active Amy"), true);
+  check("their entry says when", first.includes("added yesterday"), true);
+  check("they are flagged as recently active",
+    await page.locator(".collector-card").first().locator(".fresh-dot").count(), 1);
+
+  const stale = await page.locator(".collector-card").last().textContent();
+  check("a dormant collection says so", stale.includes("over a year ago"), true);
+  check("and carries no recent flag",
+    await page.locator(".collector-card").last().locator(".fresh-dot").count(), 0);
+  check("recency costs no extra request", backend.publicQueries.length, 1);
+  check("no errors on the directory", errors, []);
+  await context.close();
+
+  const showcase = await open("/c/active");
+  await showcase.page.waitForFunction(
+    () => document.querySelectorAll("#showcaseGrid .catalog-card").length === 2);
+  const meta = await showcase.page.locator("#showcaseMeta").textContent();
+  check("the showcase dates itself", meta.includes("last added yesterday"), true);
+  check("and counts what is new", meta.includes("1 new"), true);
+  check("only the recent card is badged",
+    await showcase.page.locator("#showcaseGrid .fresh").count(), 1);
+  check("no errors on the showcase", showcase.errors, []);
+  await showcase.context.close();
 }
 
 // --- A collection must never contain somebody else's cards -------------------
