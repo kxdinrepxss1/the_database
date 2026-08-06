@@ -21,12 +21,22 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
+  if (url.pathname === "/rest/v1/rpc/delete_own_account") {
+    backend.accountDeletes++;
+    if (backend.failDelete) return [500, { message: "could not delete" }];
+    backend.cards = []; backend.profiles = []; backend.snapshots = [];
+    return [204, null];
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/storage/v1/object/card-photos/")) {
+    backend.photoDeletes.push(url.pathname.replace("/storage/v1/object/card-photos/", ""));
+    return [200, {}];
+  }
   if (url.pathname.startsWith("/storage/v1/object/sign/")) {
     let parsed = {}; try { parsed = JSON.parse(body || "{}"); } catch {}
     if (Array.isArray(parsed.paths)) {
@@ -994,6 +1004,125 @@ const PUBLIC_ROWS = [
     await showcase.page.locator("#showcaseGrid .fresh").count(), 1);
   check("no errors on the showcase", showcase.errors, []);
   await showcase.context.close();
+}
+
+// --- Leaving -----------------------------------------------------------------
+// Somebody who cannot delete their account is stuck with it, and export alone
+// is not a way out. The safeguard is typing the word, so most of this is about
+// what happens when it is not typed.
+{
+  backend.cards = [
+    { id: "aaaaaaaa-8888-4888-8888-888888888881", user_id: USER.id, player: "Aaron Judge",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1,
+      front_image_path: `${USER.id}/one-front.jpg`, back_image_path: `${USER.id}/one-back.jpg` },
+  ];
+  backend.profiles = [{ user_id: USER.id, handle: "leaver", is_public: true }];
+  backend.snapshots = []; backend.noSnapshotTable = false;
+  backend.accountDeletes = 0; backend.photoDeletes = []; backend.failDelete = false;
+
+  // Deliberately not addInitScript: that reinstates the session on every
+  // navigation, so the page the user lands on after deleting would be signed
+  // in again and the check below would be testing the harness, not the app.
+  const context = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/account`);
+  await page.evaluate((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  await page.reload();
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+
+  check("the confirmation is not shown until asked",
+    await page.locator("#deleteConfirm").isVisible(), false);
+  await page.locator("#deleteAccount").click();
+  check("asking opens it", await page.locator("#deleteConfirm").isVisible(), true);
+  check("it says what will go",
+    (await page.locator("#deleteCount").textContent()).includes("1 card"), true);
+  check("the button starts dead", await page.locator("#deleteForReal").isDisabled(), true);
+
+  // The near-misses matter more than the hit: this is the only safeguard.
+  for (const typed of ["delete", "DELETE ME", "DELET"]) {
+    await page.locator("#deleteWord").fill(typed);
+    check(`"${typed}" does not arm the button`,
+      await page.locator("#deleteForReal").isDisabled(), true);
+  }
+  await page.locator("#deleteWord").fill("DELETE");
+  check("the exact word arms it", await page.locator("#deleteForReal").isDisabled(), false);
+
+  // Backing out must leave everything alone.
+  await page.locator("#deleteCancel").click();
+  check("cancelling closes it", await page.locator("#deleteConfirm").isVisible(), false);
+  check("and deletes nothing", backend.accountDeletes, 0);
+
+  await page.locator("#deleteAccount").click();
+  check("reopening clears the typed word",
+    await page.locator("#deleteWord").inputValue(), "");
+
+  await page.locator("#deleteWord").fill("DELETE");
+  await page.locator("#deleteForReal").click();
+  await page.waitForFunction(() => location.pathname === "/");
+
+  check("the account was deleted once", backend.accountDeletes, 1);
+  // Storage files hang off no cascade, so the client has to remove them.
+  check("both photos were removed", backend.photoDeletes.length, 2);
+  check("the visitor is told it worked",
+    await page.locator("#goodbye:not(.hidden)").count(), 1);
+  check("the goodbye is not left in the address bar",
+    new URL(page.url()).search, "");
+  // An empty array written back by a fresh page load is not leftover data, so
+  // this asks whether anything still holds content rather than whether a key
+  // exists at all.
+  const leftover = await page.evaluate(() =>
+    ["the-database-cards", "the-database-session", "the-database-history",
+      "the-database-outbox", "the-database-signed", "the-database-prices"]
+      .filter((k) => {
+        const raw = localStorage.getItem(k);
+        if (!raw) return false;
+        try { const v = JSON.parse(raw); return Object.keys(v || {}).length > 0; }
+        catch { return true; }
+      }));
+  check("nothing is left on the device", leftover, []);
+  check("no errors while leaving", errors, []);
+  await context.close();
+}
+
+// A failed deletion must say so rather than look like it worked.
+{
+  backend.cards = []; backend.profiles = []; backend.snapshots = [];
+  backend.accountDeletes = 0; backend.photoDeletes = []; backend.failDelete = true;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/account`);
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+  await page.locator("#deleteAccount").click();
+  await page.locator("#deleteWord").fill("DELETE");
+  await page.locator("#deleteForReal").click();
+  await page.waitForFunction(() => document.querySelector("#deleteMessage").textContent.length > 0);
+
+  check("the failure is reported",
+    (await page.locator("#deleteMessage").textContent()).length > 0, true);
+  check("the page did not pretend to leave", new URL(page.url()).pathname, "/account");
+  check("the session survives so it can be retried",
+    await page.evaluate(() => !!localStorage.getItem("the-database-session")), true);
+  check("and the button is offered again",
+    await page.locator("#deleteForReal").isDisabled(), false);
+  check("no errors on a failed delete", errors, []);
+  await context.close();
+  backend.failDelete = false;
 }
 
 // --- A collection must never contain somebody else's cards -------------------

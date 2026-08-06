@@ -164,3 +164,70 @@ select 'alice cannot read bob errors: ' ||
 from public.error_events where user_id = '22222222-2222-2222-2222-222222222222';
 
 reset role;
+
+-- === Closing an account ===
+-- The function takes no arguments and reads auth.uid() itself, so the only
+-- account any caller can reach through it is their own.
+insert into auth.users (id, email) values
+  ('55555555-5555-5555-5555-555555555555', 'leaver@example.com'),
+  ('66666666-6666-6666-6666-666666666666', 'stayer@example.com')
+on conflict do nothing;
+
+insert into public.cards (id, user_id, player, card_set) values
+  ('55555555-0000-4000-8000-000000000001', '55555555-5555-5555-5555-555555555555', 'Leaver Card', 'Topps'),
+  ('66666666-0000-4000-8000-000000000001', '66666666-6666-6666-6666-666666666666', 'Stayer Card', 'Topps')
+on conflict do nothing;
+insert into public.collector_profiles (user_id, handle, is_public) values
+  ('55555555-5555-5555-5555-555555555555', 'leaver', true) on conflict do nothing;
+insert into public.collection_snapshots (user_id, total) values
+  ('55555555-5555-5555-5555-555555555555', 10) on conflict do nothing;
+insert into storage.objects (bucket_id, name) values
+  ('card-photos', '55555555-5555-5555-5555-555555555555/a-front.jpg'),
+  ('card-photos', '66666666-6666-6666-6666-666666666666/b-front.jpg')
+on conflict do nothing;
+
+grant execute on function public.delete_own_account() to authenticated;
+
+set role authenticated;
+set request.jwt.claim.sub = '55555555-5555-5555-5555-555555555555';
+select public.delete_own_account();
+reset role;
+
+select 'deleting an account removes the auth user: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from auth.users where id = '55555555-5555-5555-5555-555555555555';
+
+select 'it cascades to the cards: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.cards where user_id = '55555555-5555-5555-5555-555555555555';
+
+select 'it cascades to the profile, closing the public page: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_profiles where user_id = '55555555-5555-5555-5555-555555555555';
+
+select 'it cascades to the value history: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collection_snapshots where user_id = '55555555-5555-5555-5555-555555555555';
+
+select 'it removes their photos, which no cascade reaches: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from storage.objects where name like '55555555-5555-5555-5555-555555555555/%';
+
+-- The whole point: one account, not the neighbours.
+select 'another collector is untouched: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.cards where user_id = '66666666-6666-6666-6666-666666666666';
+
+select 'and so are their photos: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from storage.objects where name like '66666666-6666-6666-6666-666666666666/%';
+
+-- Signed out, it must refuse rather than delete something arbitrary.
+do $$
+begin
+  perform set_config('request.jwt.claim.sub', '', true);
+  perform public.delete_own_account();
+  raise notice 'deleting without a session is refused: FAIL';
+exception when others then
+  raise notice 'deleting without a session is refused: PASS';
+end $$;

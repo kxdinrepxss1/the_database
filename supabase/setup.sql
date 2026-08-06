@@ -327,6 +327,54 @@ using (auth.uid() = user_id);
 --   delete from public.error_events where created_at < now() - interval '90 days';
 --   delete from public.scan_events  where created_at < now() - interval '90 days';
 
+-- ---------------------------------------------------------------------------
+-- Leaving.
+--
+-- Every table above hangs off auth.users with "on delete cascade", so removing
+-- that one row removes the collection, the profile, the value history, the scan
+-- counter and the error reports together. Nothing else has to be kept in step,
+-- which is the point of doing it this way.
+--
+-- Deleting a user is normally an admin-API call needing the service-role key,
+-- and that key must never go near this app -- it bypasses every rule in this
+-- file. A security-definer function avoids it entirely. This one takes no
+-- arguments and reads auth.uid() itself, so a caller cannot name somebody else
+-- to delete: the only account reachable through it is the caller's own.
+-- ---------------------------------------------------------------------------
+create or replace function public.delete_own_account()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+begin
+  if me is null then
+    raise exception 'delete_own_account requires a signed-in user';
+  end if;
+
+  -- Storage rows do not hang off auth.users, so they are removed explicitly.
+  -- The client deletes the files first; this catches whatever it could not.
+  delete from storage.objects
+   where bucket_id = 'card-photos'
+     and (storage.foldername(name))[1] = me::text;
+
+  delete from auth.users where id = me;
+end;
+$$;
+
+-- Signed in only, and never inherited by anonymous callers.
+revoke all on function public.delete_own_account() from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on function public.delete_own_account() from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant execute on function public.delete_own_account() to authenticated';
+  end if;
+end $$;
+
 insert into storage.buckets (id, name, public)
 values ('card-photos', 'card-photos', false)
 on conflict (id) do update set public = false;
@@ -527,6 +575,18 @@ begin
 
   if not exists (select 1 from pg_proc where proname = 'is_shared_card_photo') then
     problems := problems || 'missing: public.is_shared_card_photo()';
+  end if;
+
+  if not exists (select 1 from pg_proc where proname = 'delete_own_account') then
+    problems := problems || 'missing: public.delete_own_account()';
+  end if;
+
+  -- It takes no arguments on purpose. One that accepted a user id would be a
+  -- way for any signed-in caller to delete anybody.
+  if exists (
+    select 1 from pg_proc where proname = 'delete_own_account' and pronargs > 0
+  ) then
+    problems := problems || 'public.delete_own_account() must take no arguments';
   end if;
 
   if not exists (
