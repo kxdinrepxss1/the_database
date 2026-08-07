@@ -347,11 +347,12 @@ async function signedIn(route) {
   return { context, page, errors };
 }
 
-const addCard = async (page, player) => {
+const addCard = async (page, player, sport) => {
   await page.click("#addCard");
   await page.fill('[name="player"]', player);
   await page.fill('[name="year"]', "2024");
   await page.fill('[name="set"]', "Topps Chrome");
+  if (sport) await page.selectOption('[name="sport"]', sport);
   await page.click(".submit-card");
   await page.waitForTimeout(500);
 };
@@ -1096,6 +1097,60 @@ const PUBLIC_ROWS = [
     await showcase.page.locator("#showcaseGrid .fresh").count(), 1);
   check("no errors on the showcase", showcase.errors, []);
   await showcase.context.close();
+}
+
+// --- Sport tabs -------------------------------------------------------------
+// The tabs were four names typed into the markup while the card form offered
+// five sports, so a hockey card could be saved and then never filtered for.
+// They are built from the collection now, so the two cannot drift apart.
+{
+  const context = await browser.newContext({ viewport: { width: 900, height: 1100 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/collection`);
+
+  const tabs = () => page.evaluate(() =>
+    [...document.querySelectorAll("#tabs button")].map((b) => b.textContent.trim()));
+
+  check("an empty collection offers only All", await tabs(), ["All"]);
+
+  await addCard(page, "Lionel Messi", "Soccer");
+  check("adding a soccer card gives it a tab", await tabs(), ["All", "Soccer"]);
+
+  await addCard(page, "Connor Bedard", "Hockey");
+  check("hockey is filterable too, which it never was",
+    (await tabs()).includes("Hockey"), true);
+
+  await addCard(page, "Aaron Judge", "Baseball");
+  await addCard(page, "Juan Soto", "Baseball");
+  // Two baseball cards against one of everything else, so the busiest sport
+  // should lead.
+  const ordered = await tabs();
+  check("All comes first", ordered[0], "All");
+  check("then the sport with the most cards", ordered[1], "Baseball");
+  check("no sport nobody owns is offered", ordered.includes("Basketball"), false);
+
+  // The tab has to actually filter, not just exist.
+  await page.click('#tabs button[data-sport="Soccer"]');
+  await page.waitForTimeout(300);
+  check("picking soccer shows only the soccer card",
+    await page.locator("#grid .catalog-card").count(), 1);
+  check("and it is the right one",
+    (await page.locator("#grid .catalog-card h3").textContent()).includes("Messi"), true);
+  check("the tab is marked active",
+    await page.locator('#tabs button[data-sport="Soccer"].active').count(), 1);
+
+  // Back via the All tab, not the Clear button: that one lives inside the empty
+  // state and is hidden whenever the filter actually matched something.
+  await page.click('#tabs button[data-sport="All"]');
+  await page.waitForTimeout(300);
+  check("All brings everything back",
+    await page.locator("#grid .catalog-card").count(), 4);
+  check("and All is the active tab again",
+    await page.locator('#tabs button[data-sport="All"].active').count(), 1);
+  check("no errors around the tabs", errors, []);
+  await context.close();
 }
 
 // --- Photo bandwidth ----------------------------------------------------------
