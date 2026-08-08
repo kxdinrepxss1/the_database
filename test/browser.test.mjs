@@ -1099,6 +1099,60 @@ const PUBLIC_ROWS = [
   await showcase.context.close();
 }
 
+// --- The first thirty seconds -------------------------------------------------
+// Somebody arriving with nothing was shown "No cards found -- try another player
+// or clear the filters" and a Clear filters button. They had not searched and
+// had set no filters, so the app opened by telling them they had already got it
+// wrong. An empty collection and a filter that matched nothing are different
+// problems and only one of them is the visitor's doing.
+{
+  const context = await browser.newContext({ viewport: { width: 900, height: 1100 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.goto(`${origin}/collection`);
+  await page.waitForSelector("#empty:not(.hidden)");
+  check("an empty collection says so",
+    (await page.locator("#emptyTitle").textContent()).trim(), "Your collection is empty");
+  check("it does not blame filters nobody set",
+    /filter/i.test(await page.locator("#emptyText").textContent()), false);
+  check("Clear filters is not offered when nothing is filtered",
+    await page.locator("#clear").isVisible(), false);
+  check("a way to start is", await page.locator("#emptyAdd").isVisible(), true);
+  // The button has to work, not just be there.
+  await page.click("#emptyAdd");
+  check("and it opens the card form", await page.locator("#manualForm").count(), 1);
+  await page.keyboard.press("Escape");
+
+  // The home page opened with a chart of nothing and four dashes, which reads
+  // as broken rather than as new.
+  await page.goto(`${origin}/`);
+  await page.waitForFunction(() => !document.querySelector("#firstRun").classList.contains("hidden"));
+  check("the home page offers a first step", await page.locator("#firstRun").isVisible(), true);
+  check("and hides a dashboard with nothing to show",
+    await page.locator("#dashboard").isVisible(), false);
+
+  // Once there is a collection, both revert to the normal thing.
+  await page.goto(`${origin}/collection`);
+  await addCard(page, "Aaron Judge");
+  check("the empty state goes away", await page.locator("#empty").isVisible(), false);
+  await page.fill("#search", "nobody named this");
+  await page.waitForTimeout(300);
+  check("a search that matches nothing says that instead",
+    (await page.locator("#emptyTitle").textContent()).trim(), "No cards found");
+  check("and offers Clear filters again", await page.locator("#clear").isVisible(), true);
+  check("without offering to add a first card",
+    await page.locator("#emptyAdd").isVisible(), false);
+
+  await page.goto(`${origin}/`);
+  await page.waitForFunction(() => document.querySelector("#firstRun").classList.contains("hidden"));
+  check("the home dashboard returns once there are cards",
+    await page.locator("#dashboard").isVisible(), true);
+  check("no errors through the first run", errors, []);
+  await context.close();
+}
+
 // --- Sport tabs -------------------------------------------------------------
 // The tabs were four names typed into the markup while the card form offered
 // five sports, so a hockey card could be saved and then never filtered for.
