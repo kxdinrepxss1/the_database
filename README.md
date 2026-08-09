@@ -12,6 +12,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - public showcase pages, opt-in and off by default
 - collection value, cost, profit, and growth tracking
 - one-click export of the whole collection, photos included
+- spreadsheet import, matching columns by name rather than position
 - install-to-home-screen support
 
 ## Project structure
@@ -255,6 +256,41 @@ Open the local address Wrangler prints.
 The ZIP is built in the browser with no external library, so nothing is
 uploaded anywhere to produce it. Take one before any release that changes how
 cards are stored.
+
+## Importing a spreadsheet
+
+**Account → Import a spreadsheet** reads a `.csv` and shows what it found
+before writing anything. A lot of collectors already keep their collection in a
+spreadsheet, and without this that is a reason not to use the app rather than a
+way into it — nobody retypes three hundred cards.
+
+Columns are matched **by name, never by position**. A file whose columns have to
+be in a fixed order is a file almost nobody already has. Headers are lowercased
+and stripped of punctuation, and `#` becomes the word `number`, so `Card #`,
+`card_number` and `No.` all mean the same column. Each field accepts several
+names: `Paid`, `Cost` and `Purchase Price` all land on the purchase price.
+
+Exact names are matched first, then headers that merely begin or end with a
+known word, so `My Notes` and `Card Notes` both reach the notes field. That
+second pass ignores words shorter than four characters — matching on `no` would
+route a notes column into the card number — and never matches on `name` alone,
+since `Card Name` and `Team Name` want different fields.
+
+Only a player column is required. A file without one is refused outright rather
+than importing a pile of blanks; every other field falls back to the same
+default the manual form uses. Rows with no player name are skipped, which is
+usually the blank line at the end of the file. Columns nobody recognises are
+ignored and listed by name in the preview, so nothing disappears silently.
+
+A single location column is split on `/` and `,` into container, section and
+slot, the same way `setup.sql` splits older records. Cards that look like ones
+already held are flagged in the preview but not blocked — the collector knows
+their own collection better than the duplicate check does.
+
+The app's own `collection.csv` imports cleanly, so an export is a backup you can
+actually restore. Imported cards are private and unshared regardless of what the
+file says, and they go through the same outbox as everything else, so a large
+import survives a dropped connection.
 
 ## Tests
 

@@ -1099,6 +1099,87 @@ const PUBLIC_ROWS = [
   await showcase.context.close();
 }
 
+// --- Importing a spreadsheet --------------------------------------------------
+// Collectors already keep spreadsheets, and until now that was a reason not to
+// use the app rather than a way into it. Nothing is written until the preview
+// has been seen and confirmed.
+{
+  backend.cards = []; backend.failWrites = false; backend.snapshots = [];
+  backend.noSnapshotTable = false;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/account`);
+  await page.evaluate((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  await page.reload();
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+
+  // Columns deliberately out of order, oddly named, with an extra one.
+  const csv = [
+    "Nickname,Card #,Player Name,Qty,Yr,Card Set,Paid",
+    "judgey,#1,Aaron Judge,2,2024,Topps Chrome,300",
+    "sotoshow,50,Juan Soto,,2024,Topps,",
+    ",,,,,,",
+  ].join("\r\n");
+  await page.setInputFiles("#importFile", {
+    name: "collection.csv", mimeType: "text/csv", buffer: Buffer.from(csv),
+  });
+  await page.waitForSelector("#importPanel:not(.hidden)");
+
+  const summary = await page.locator("#importSummary").textContent();
+  check("the preview counts the cards", summary.includes("2 cards ready"), true);
+  check("and says a blank row was skipped", summary.includes("1 row skipped"), true);
+  check("the unused column is named",
+    (await page.locator("#importIgnored").textContent()).includes("Nickname"), true);
+  check("nothing is added before confirming", backend.cards.length, 0);
+  check("and the collection is still empty",
+    await page.evaluate(() => JSON.parse(localStorage.getItem("the-database-cards") || "[]").length), 0);
+
+  // Backing out has to leave everything alone.
+  await page.click("#cancelImport");
+  check("cancelling closes the preview", await page.locator("#importPanel").isVisible(), false);
+  check("and writes nothing", backend.cards.length, 0);
+
+  await page.setInputFiles("#importFile", {
+    name: "collection.csv", mimeType: "text/csv", buffer: Buffer.from(csv),
+  });
+  await page.waitForSelector("#importPanel:not(.hidden)");
+  await page.click("#confirmImport");
+  await page.waitForFunction(() => document.querySelector("#importPanel").classList.contains("hidden"));
+  await page.waitForTimeout(900);
+
+  check("both cards reach the backend", backend.cards.length, 2);
+  const judge = backend.cards.find((c) => c.player === "Aaron Judge");
+  check("the odd column names were understood", !!judge, true);
+  check("quantity came across", judge.quantity, 2);
+  check("so did purchase price", Number(judge.purchase_price), 300);
+  check("and the card number", judge.card_number, "#1");
+  check("imported cards are private", judge.visibility, "private");
+  check("the message says what happened",
+    (await page.locator("#importMessage").textContent()).includes("2 cards added"), true);
+
+  // A file with no player column cannot be guessed at, and must say so rather
+  // than importing a pile of blanks.
+  await page.setInputFiles("#importFile", {
+    name: "bad.csv", mimeType: "text/csv",
+    buffer: Buffer.from("Set,Year\r\nTopps,2024"),
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("#importMessage").textContent.includes("Player"));
+  check("a file with no player column is refused, not half-imported",
+    backend.cards.length, 2);
+  check("the preview stays shut", await page.locator("#importPanel").isVisible(), false);
+  check("no errors through the import", errors, []);
+  await context.close();
+}
+
 // --- The first thirty seconds -------------------------------------------------
 // Somebody arriving with nothing was shown "No cards found -- try another player
 // or clear the filters" and a Clear filters button. They had not searched and
