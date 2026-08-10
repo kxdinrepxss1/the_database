@@ -13,6 +13,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - collection value, cost, profit, and growth tracking
 - one-click export of the whole collection, photos included
 - spreadsheet import, matching columns by name rather than position
+- bulk editing, so an imported collection can be put away a shelf at a time
 - a private wantlist, matched against shared collections without ever being published
 - install-to-home-screen support
 
@@ -317,6 +318,36 @@ The app's own `collection.csv` imports cleanly, so an export is a backup you can
 actually restore. Imported cards are private and unshared regardless of what the
 file says, and they go through the same outbox as everything else, so a large
 import survives a dropped connection.
+
+## Bulk editing
+
+Import solves getting cards *in*. It does not solve the thing the app is
+actually for: three hundred cards arrive with no storage location on any of
+them, and the location is the only field a spreadsheet almost never has.
+Editing them one card at a time means the location never gets filled in, so
+the differentiator goes unused.
+
+**Collection → Select** turns every tile into a checkbox. Selection works on
+whatever the filters are showing, and **Select all shown** takes only that, so
+the way to put a collection away is to narrow to a set or a sport and assign a
+shelf to it, then move on to the next.
+
+**Set location** asks for container, section, slot and collection type at once.
+A field left blank keeps whatever each selected card already has, so a second
+pass can add the slot without wiping the container the first pass set. Typing a
+single space clears a field instead. A form with nothing in it is refused
+rather than queueing a write per card that changes nothing.
+
+**Share** and **Unshare** flip the public flag on the selection — an import
+arrives private, and a collector who wants a public page should not click
+through three hundred cards to get one. **Remove** asks before deleting, since
+that is the one action here that cannot be undone.
+
+Every bulk write goes through the same outbox as a single card, so a change to
+three hundred cards survives a dropped connection the same way one card does.
+The outbox holds 2000 pending operations; it used to hold 200, which meant the
+201st card of a large import silently pushed the first one out and that card
+never reached the cloud at all.
 
 ## Tests
 

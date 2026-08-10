@@ -1283,6 +1283,185 @@ const PUBLIC_ROWS = [
   await context.close();
 }
 
+// --- Bulk actions ---------------------------------------------------------------
+// An import lands hundreds of cards with no storage location on any of them,
+// and the location is the reason the app exists. Editing them one at a time is
+// not a real option, so selection has to work on whatever the filters show.
+{
+  backend.cards = [
+    { id: "e1111111-4444-4444-8444-444444444444", user_id: USER.id, player: "Aaron Judge",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1, visibility: "private" },
+    { id: "e2222222-4444-4444-8444-444444444444", user_id: USER.id, player: "Juan Soto",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1, visibility: "private" },
+    { id: "e3333333-4444-4444-8444-444444444444", user_id: USER.id, player: "Shohei Ohtani",
+      year: 2023, card_set: "Bowman", parallel: "Base", grade: "Raw", quantity: 1, visibility: "private" },
+  ];
+  backend.failWrites = false; backend.snapshots = []; backend.noSnapshotTable = false;
+
+  const context = await browser.newContext({ viewport: { width: 1100, height: 1200 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e.message)));
+  await page.goto(origin + "/collection");
+  await page.waitForFunction(() => document.querySelectorAll(".catalog-card").length === 3);
+
+  const rowFor = (player) => backend.cards.find((c) => c.player === player);
+
+  check("the bulk bar is hidden until asked for",
+    await page.locator("#bulkBar").isVisible(), false);
+  check("tiles carry no selection marker yet", await page.locator(".pick").count(), 0);
+
+  await page.click("#selectMode");
+  await page.waitForTimeout(200);
+  check("selecting shows the bar", await page.locator("#bulkBar").isVisible(), true);
+  check("and a checkbox on every tile", await page.locator(".pick").count(), 3);
+  check("nothing is selected to start",
+    (await page.locator("#bulkCount").textContent()), "0 selected");
+  check("so the actions are disabled",
+    await page.locator("#bulkEdit").isDisabled(), true);
+
+  // A tile click must select rather than open the card, or selecting is
+  // impossible on a phone where there is no modifier key.
+  await page.locator(".catalog-card").first().click();
+  await page.waitForTimeout(150);
+  check("clicking a tile selects it", await page.locator("#bulkCount").textContent(), "1 selected");
+  check("and does not open the card", await page.locator("#backdrop.open").count(), 0);
+  check("the tile shows as picked", await page.locator(".catalog-card.picked").count(), 1);
+  check("the actions come alive", await page.locator("#bulkEdit").isDisabled(), false);
+  await page.locator(".catalog-card").first().click();
+  await page.waitForTimeout(150);
+  check("clicking again deselects", await page.locator("#bulkCount").textContent(), "0 selected");
+
+  // Select all applies to what the filters are showing, not the whole
+  // collection: narrowing first is how a big import gets split into piles.
+  await page.selectOption("#setFilter", "Topps");
+  await page.waitForTimeout(250);
+  check("filtering narrows the grid", await page.locator(".catalog-card").count(), 2);
+  await page.click("#bulkAll");
+  await page.waitForTimeout(200);
+  check("select all takes only what is shown",
+    await page.locator("#bulkCount").textContent(), "2 selected");
+
+  await page.click("#bulkEdit");
+  await page.waitForSelector("#bulkForm");
+  await page.fill('[name="container"]', "Binder 9");
+  await page.fill('[name="section"]', "Page 1");
+  await page.selectOption('[name="collectionStatus"]', "For sale");
+  await page.click("#bulkForm .primary");
+  await page.waitForTimeout(900);
+
+  check("both selected cards get the container",
+    [rowFor("Aaron Judge").storage_container, rowFor("Juan Soto").storage_container],
+    ["Binder 9", "Binder 9"]);
+  check("and the section",
+    [rowFor("Aaron Judge").storage_section, rowFor("Juan Soto").storage_section],
+    ["Page 1", "Page 1"]);
+  check("and the collection type", rowFor("Juan Soto").collection_status, "For sale");
+  check("the card that was filtered out is untouched",
+    rowFor("Shohei Ohtani").storage_container || null, null);
+  check("the bar says what happened",
+    (await page.locator("#bulkMessage").textContent()).includes("2 cards updated"), true);
+
+  await page.selectOption("#setFilter", "All sets");
+  await page.waitForTimeout(250);
+  check("the new container is offered as a filter",
+    await page.locator("#containerFilter option").allTextContents(),
+    ["All locations", "Binder 9 (2)"]);
+  check("the selection survives the filter change",
+    await page.locator("#bulkCount").textContent(), "2 selected");
+
+  // A blank field must leave each card's own value alone, so a second pass can
+  // set the slot without wiping the container that was just set.
+  await page.click("#bulkNone");
+  await page.waitForTimeout(150);
+  await page.locator('.catalog-card[data-id="e1111111-4444-4444-8444-444444444444"]').click();
+  await page.waitForTimeout(150);
+  await page.click("#bulkEdit");
+  await page.waitForSelector("#bulkForm");
+  await page.fill('[name="slot"]', "Slot 4");
+  await page.click("#bulkForm .primary");
+  await page.waitForTimeout(900);
+  check("a blank field keeps what the card already had",
+    rowFor("Aaron Judge").storage_container, "Binder 9");
+  check("and the field that was filled in is set", rowFor("Aaron Judge").storage_slot, "Slot 4");
+  check("the other card is left alone", rowFor("Juan Soto").storage_slot || null, null);
+
+  // Submitting an empty form would otherwise queue a write per card for nothing.
+  await page.click("#bulkEdit");
+  await page.waitForSelector("#bulkForm");
+  await page.click("#bulkForm .primary");
+  await page.waitForTimeout(200);
+  check("an empty form is refused", await page.locator("#bulkError.show").count(), 1);
+  check("and the form stays open", await page.locator("#bulkForm").count(), 1);
+  await page.click("#bulkForm .close2");
+  await page.waitForTimeout(200);
+
+  // Sharing in bulk is the other half: an import arrives private, and a
+  // collector who wants a public page should not click through 300 cards.
+  await page.click("#bulkAll");
+  await page.waitForTimeout(150);
+  await page.click("#bulkShare");
+  await page.waitForTimeout(900);
+  check("every card is shared", backend.cards.every((c) => c.visibility === "public"), true);
+  await page.click("#bulkUnshare");
+  await page.waitForTimeout(900);
+  check("and can be taken back down", backend.cards.every((c) => c.visibility === "private"), true);
+
+  // Removal is the one that cannot be undone, so it asks first.
+  await page.click("#bulkNone");
+  await page.waitForTimeout(150);
+  await page.locator('.catalog-card[data-id="e3333333-4444-4444-8444-444444444444"]').click();
+  await page.waitForTimeout(150);
+  await page.click("#bulkDelete");
+  await page.waitForSelector("#bulkConfirm");
+  check("nothing is deleted before confirming", backend.cards.length, 3);
+  await page.click(".modal .close2");
+  await page.waitForTimeout(200);
+  check("backing out deletes nothing", backend.cards.length, 3);
+
+  await page.click("#bulkDelete");
+  await page.waitForSelector("#bulkConfirm");
+  await page.click("#bulkConfirm");
+  await page.waitForTimeout(900);
+  check("confirming removes the selected card", backend.cards.length, 2);
+  check("and it is the right one", rowFor("Shohei Ohtani") || null, null);
+  check("the grid shrinks with it", await page.locator(".catalog-card").count(), 2);
+  check("the selection is emptied afterwards",
+    await page.locator("#bulkCount").textContent(), "0 selected");
+
+  // Leaving select mode has to give the tiles back.
+  await page.click("#selectMode");
+  await page.waitForTimeout(200);
+  check("the bar goes away", await page.locator("#bulkBar").isVisible(), false);
+  check("the checkboxes go with it", await page.locator(".pick").count(), 0);
+  await page.locator(".catalog-card").first().click();
+  await page.waitForTimeout(300);
+  check("and a tile opens the card again", await page.locator("#backdrop.open").count(), 1);
+  await page.click(".modal .close");
+  await page.waitForTimeout(200);
+
+  // Pricing and selecting both take over the tile, so only one can be on.
+  await page.click("#selectMode");
+  await page.waitForTimeout(150);
+  await page.click("#priceMode");
+  await page.waitForTimeout(250);
+  check("turning on pricing turns off selecting",
+    await page.locator("#bulkBar").isVisible(), false);
+  check("and the price inputs are back", await page.locator(".tile-price").count(), 2);
+  await page.click("#selectMode");
+  await page.waitForTimeout(250);
+  check("and selecting turns pricing back off", await page.locator(".tile-price").count(), 0);
+
+  check("no errors across the bulk flow", errors, []);
+  await context.close();
+}
+
 // --- The first thirty seconds -------------------------------------------------
 // Somebody arriving with nothing was shown "No cards found -- try another player
 // or clear the filters" and a Clear filters button. They had not searched and
