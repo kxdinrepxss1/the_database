@@ -342,3 +342,83 @@ select 'the reports are there for an owner to read: ' ||
 from public.reports;
 
 delete from public.reports;
+
+-- === A wantlist is never published ===
+-- What somebody is hunting says where the gaps are and what they would pay to
+-- fill them. There is no policy granting anyone but the owner a read, so these
+-- checks pass only when every attempt to see somebody else's list fails.
+grant select, insert, delete on public.collector_interests to authenticated;
+grant select on public.collector_interests to anon;
+
+delete from public.collector_interests
+ where user_id in ('11111111-1111-1111-1111-111111111111',
+                   '22222222-2222-2222-2222-222222222222');
+
+insert into public.collector_interests (user_id, kind, player, card_set) values
+  ('11111111-1111-1111-1111-111111111111', 'wanted', 'Secret Target', 'Topps Chrome');
+
+set role anon;
+select 'an anonymous visitor cannot read a wantlist: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collector_interests;
+reset role;
+
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+
+select 'a signed-in stranger cannot read a wantlist: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collector_interests;
+
+-- Not even a count. Knowing how many things somebody is hunting is a smaller
+-- leak than the list, but it is still a leak.
+select 'a stranger cannot even count the entries: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_interests where user_id = '11111111-1111-1111-1111-111111111111';
+
+do $$
+begin
+  insert into public.collector_interests (user_id, kind, player)
+  values ('11111111-1111-1111-1111-111111111111', 'wanted', 'Planted');
+  raise notice 'a stranger cannot add to somebody else wantlist: FAIL';
+exception when others then
+  raise notice 'a stranger cannot add to somebody else wantlist: PASS';
+end $$;
+
+do $$
+declare gone int;
+begin
+  delete from public.collector_interests
+   where user_id = '11111111-1111-1111-1111-111111111111';
+  get diagnostics gone = row_count;
+  if gone = 0 then
+    raise notice 'a stranger cannot delete somebody else wantlist: PASS';
+  else
+    raise notice 'a stranger cannot delete somebody else wantlist: FAIL (% rows)', gone;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'a stranger cannot delete somebody else wantlist: PASS';
+end $$;
+reset role;
+
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+select 'the owner can read their own wantlist: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL' end
+from public.collector_interests;
+reset role;
+
+-- An entry with no player and no set would match the whole database.
+do $$
+begin
+  insert into public.collector_interests (user_id, kind) values
+    ('11111111-1111-1111-1111-111111111111', 'wanted');
+  raise notice 'an empty wantlist entry is rejected: FAIL';
+exception when check_violation then
+  raise notice 'an empty wantlist entry is rejected: PASS';
+        when others then
+  raise notice 'an empty wantlist entry is rejected: PASS';
+end $$;
+
+delete from public.collector_interests
+ where user_id = '11111111-1111-1111-1111-111111111111';

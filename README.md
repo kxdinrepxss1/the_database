@@ -13,6 +13,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - collection value, cost, profit, and growth tracking
 - one-click export of the whole collection, photos included
 - spreadsheet import, matching columns by name rather than position
+- a private wantlist, matched against shared collections without ever being published
 - install-to-home-screen support
 
 ## Project structure
@@ -163,6 +164,31 @@ deliberately best-effort and are not queued through the outbox: one is a single
 point on a trend line, whereas a card is the collector's actual data. Writes are
 debounced, so a burst of price edits leaves one point rather than one per
 keystroke.
+
+## Wantlists
+
+**Account → Wantlist** records cards a collector is hunting. It is **never
+published**: `collector_interests` has no policy granting anyone but the owner a
+read, not even an aggregate one, and no grant to `anon` at all.
+
+Matching happens in the collector's own browser. Their client reads their own
+list and turns it into a single query against `public_cards`, so the only thing
+that reaches the server is a search indistinguishable from any other. There is
+no path by which one collector could learn what another is looking for.
+
+That matters more than it first appears. A wantlist says where somebody's gaps
+are and what they would pay to fill them — useful to a seller, and more useful
+to somebody dishonest. A collection is a list of things owned; a wantlist is a
+statement of intent.
+
+Every term goes through the same whitelist the search box uses before it reaches
+the query, because PostgREST's `and`/`or` groups are punctuation and a wantlist
+entry must not be able to become part of them. Entries with neither a player nor
+a set are rejected by a check constraint, since they would match everything.
+
+Matches appear above the collector directory on **/search**, drawn from
+`public_cards` like everything else there — so a wantlist can never surface a
+card its owner has not shared.
 
 ## Reports
 
