@@ -1597,9 +1597,11 @@ const PUBLIC_ROWS = [
 }
 
 // --- The feed -------------------------------------------------------------------
-// Three sources, one page: collectors you follow, cards you are hunting, and
-// players or teams you watch. All three read public_cards, which is the only
-// thing that decides what is visible. The two lists are never published.
+// One column, newest first. Three sources merge into it -- collectors you
+// follow, cards you are hunting, players and teams you watch -- because three
+// separate lists is a report, not a feed. All three read public_cards, which is
+// the only thing that decides what is visible, and the two lists are never
+// published.
 {
   const OTHER = "99999999-9999-4999-8999-999999999999";
   const THIRD = "aaaa9999-9999-4999-8999-999999999999";
@@ -1633,7 +1635,7 @@ const PUBLIC_ROWS = [
     const { context, page, errors } = await open("/feed");
     check("signed out, the feed asks you to sign in",
       await page.locator("#feedSignedOut").isVisible(), true);
-    check("and shows no feed body", await page.locator("#feedBody").isVisible(), false);
+    check("and shows no posts", await page.locator("#feedPosts").isVisible(), false);
     check("no follow request is made while signed out", backend.followQueries.length, 0);
     check("no errors on the signed-out feed", errors, []);
     await context.close();
@@ -1662,7 +1664,7 @@ const PUBLIC_ROWS = [
     check("an unconfigured feed says how to start",
       await page.locator("#feedEmpty").isVisible(), true);
     check("and does not claim your follows are quiet",
-      await page.locator("#dropNone").isVisible(), false);
+      await page.locator("#feedQuiet").isVisible(), false);
     check("no errors on the empty feed", errors, []);
     await context.close();
   }
@@ -1697,29 +1699,29 @@ const PUBLIC_ROWS = [
 
   {
     const { context, page, errors } = await signedIn("/feed");
-    await page.waitForSelector(".drop");
+    await page.waitForSelector(".post");
 
     // A card at a time would bury everybody under one person's box break.
-    const drops = await page.evaluate(() => [...document.querySelectorAll(".drop")].map((d) => ({
-      who: d.querySelector(".drop-who b").textContent,
-      count: d.querySelector(".drop-count").textContent,
-      cards: d.querySelectorAll(".drop-card").length,
+    const posts = await page.evaluate(() => [...document.querySelectorAll(".post")].map((p) => ({
+      who: p.querySelector(".post-who b").textContent,
+      caption: p.querySelector(".post-caption b").textContent,
+      shots: p.querySelectorAll(".post-shot").length,
     })));
-    check("cards added together become one drop", drops.length, 3);
-    check("the sitting at the scanner is grouped", drops[0].count, "3 cards");
-    check("under the collector who added them", drops[0].who, "Box Breaker");
-    check("and shows each card in it", drops[0].cards, 3);
-    check("a different collector is its own drop", drops[1].who, "Other Collector");
-    // Three drops all stamped "today" would say nothing about which is newest,
+    check("cards added together become one post", posts.length, 3);
+    check("the sitting at the scanner is grouped", posts[0].caption, "Added 3 cards");
+    check("under the collector who added them", posts[0].who, "Box Breaker");
+    check("and every card in it is there to swipe through", posts[0].shots, 3);
+    check("a different collector is its own post", posts[1].who, "Other Collector");
+    // Three posts all stamped "today" would say nothing about which is newest,
     // which is the one thing a feed is for.
-    check("a drop says how long ago, not just what day",
+    check("a post says how long ago, not just what day",
       /minutes? ago|hours? ago|just now/.test(
-        await page.locator(".drop .drop-who small").first().textContent()), true);
-    check("and so is the same collector two hours earlier", drops[2].count, "1 card");
+        await page.locator(".post .post-who small").first().textContent()), true);
+    check("and so is the same collector two hours earlier", posts[2].caption, "Old Card");
+    check("a single card is captioned by name, not counted", posts[1].caption, "Shohei Ohtani");
 
-    // The wantlist and the watchlist reach the server only as searches.
-    check("no wantlist section without a wantlist",
-      await page.locator("#feedWantHeading").isVisible(), false);
+    // Nothing to explain when the post is simply from somebody you follow.
+    check("no reason chip on a plain follow", await page.locator(".post-reason").count(), 0);
 
     check("the follow query names the signed-in collector",
       backend.followQueries.every((q) => q.includes("follower_id=eq.") || q.includes("followed_id=eq.")), true);
@@ -1733,17 +1735,27 @@ const PUBLIC_ROWS = [
   // is written anywhere recording that a match happened.
   backend.interests = [
     { id: "w1", user_id: USER.id, kind: "wanted", player: "Shohei Ohtani", created_at: t(10) },
-    { id: "w2", user_id: USER.id, kind: "watching", team: "Los Angeles Dodgers", created_at: t(10) },
+    // A team the followed collector deals in, so a post arrives by two routes
+    // at once and the merge is exercised rather than assumed.
+    { id: "w2", user_id: USER.id, kind: "watching", team: "New York Yankees", created_at: t(10) },
   ];
   {
     const { context, page, errors } = await signedIn("/feed");
-    await page.waitForSelector("#feedWantHeading:not(.hidden)");
-    check("the wantlist section appears",
-      (await page.locator("#feedWantHeading").textContent()).includes("on your wantlist"), true);
-    check("with the matching card", await page.locator("#feedWantGrid .catalog-card").count(), 1);
-    check("the watch section appears too",
-      await page.locator("#feedWatchHeading").isVisible(), true);
-    check("matching on the team", await page.locator("#feedWatchGrid .catalog-card").count(), 1);
+    await page.waitForSelector(".post-reason");
+    const reasons = await page.evaluate(() => [...document.querySelectorAll(".post")].map((p) => ({
+      who: p.querySelector(".post-who b").textContent,
+      chip: p.querySelector(".post-reason") ? p.querySelector(".post-reason").textContent : "",
+    })));
+    check("a match says why it is in the feed",
+      reasons.find((r) => r.who === "Other Collector").chip, "On your wantlist");
+    check("and a watched team says so too",
+      reasons.some((r) => r.chip === "You watch this"), true);
+    // The old page listed the same card again under each heading it matched.
+    // One card is one post however many ways it arrived.
+    check("a card matched twice is still shown once",
+      await page.evaluate(() => [...document.querySelectorAll(".post-shot")]
+        .map((s) => s.getAttribute("aria-label"))
+        .filter((v, i, all) => all.indexOf(v) !== i).length), 0);
 
     // The whole privacy claim in one check: what was sent was a search, and it
     // carried no hint of who was searching.
@@ -1762,8 +1774,8 @@ const PUBLIC_ROWS = [
   {
     backend.cards = [{ id: "secret", user_id: OTHER, player: "Not Yours", visibility: "private" }];
     const { context, page, errors } = await signedIn("/feed");
-    await page.waitForSelector(".drop");
-    const text = await page.locator("#feedBody").textContent();
+    await page.waitForSelector(".post");
+    const text = await page.locator("#feedPosts").textContent();
     check("a followed collector's private card is not in the feed",
       text.includes("Not Yours"), false);
     check("and the feed never asked the cards table for it",
