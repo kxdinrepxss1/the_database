@@ -189,6 +189,27 @@ point on a trend line, whereas a card is the collector's actual data. Writes are
 debounced, so a burst of price edits leaves one point rather than one per
 keystroke.
 
+### Saying why a feed is empty
+
+Cards are private by default and imports force it, which is right — and it means
+a collector can add three hundred cards, follow people, and get an empty feed
+with nothing anywhere telling them why. The collection page says so:
+
+> **41 cards, none shared.** Shared cards show on your collection page and in
+> the feeds of collectors who follow you. Storage locations, purchase prices and
+> notes are never shared. **[Share all 41]** [Not now]
+
+It never shares anything on its own — the button is the only thing that writes,
+and it is the same single request the account page uses. It appears only once a
+collection has at least five cards and none of them are shared, disappears the
+moment any are, and stays dismissed once waved away, so it cannot become
+nagging. What sharing does and what it never exposes are both said at the point
+of the decision rather than left on the account page.
+
+If the profile switch is off it asks for that first and says why: sharing cards
+while the collection page is switched off changes nothing visible, so offering
+that button would be offering a button that does nothing.
+
 ## The feed
 
 `/feed` is built from three private lists and one public view. Everything on it
