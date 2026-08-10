@@ -367,6 +367,7 @@ create table if not exists public.collector_interests (
   card_set text,
   year integer,
   parallel text,
+  team text,
   created_at timestamptz not null default now(),
   -- An entry with nothing in it would match the entire database.
   constraint collector_interests_has_terms check (
