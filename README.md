@@ -14,7 +14,7 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - one-click export of the whole collection, photos included
 - spreadsheet import, matching columns by name rather than position
 - bulk editing, so an imported collection can be put away a shelf at a time
-- a feed of what collectors you follow have added, grouped into drops
+- a feed of shared cards, newest first, grouped into swipeable posts
 - private following: nobody is told you follow them, and only you see your followers
 - a private wantlist, matched against shared collections without ever being published
 - a private watchlist of players and teams, matched the same way
@@ -195,14 +195,20 @@ keystroke.
 comes from `public_cards`, so a card appears only if its owner marked it shared
 *and* their profile is public. Following somebody grants no read at all.
 
-**Drops.** A card at a time is the wrong unit: somebody photographing a box
-posts thirty times and buries everyone else. Cards added close together by the
-same collector are shown as one drop. The ten-minute window chains — each card
-within ten minutes of the one before it joins the same drop — so a long sitting
-at the scanner stays a single entry however long it runs. Grouping happens when
-the feed is read, in the browser. There is no posts table, nothing is written
-when a drop is formed, and changing the window is a one-line change rather than
-a migration.
+**One column, newest first.** The three sources merge into a single stream
+rather than appearing as three lists, because three lists is a report, not a
+feed. A post whose cards arrived through the wantlist or the watchlist carries a
+chip saying so; one from somebody you follow needs no explanation. A card that
+matches more than one way is still one card and appears once.
+
+**Posts, not cards.** A card at a time is the wrong unit: somebody photographing
+a box posts thirty times and buries everyone else. Cards added close together by
+the same collector become one post, swiped through like any photo carousel. The
+ten-minute window chains — each card within ten minutes of the one before it
+joins the same post — so a long sitting at the scanner stays a single entry
+however long it runs. Grouping happens when the feed is read, in the browser.
+There is no posts table, nothing is written when a post forms, and changing the
+window is a one-line change rather than a migration.
 
 **Following is private in both directions.** The policy on `collector_follows`
 returns a row only to the two people named in it: the follower, and the person
