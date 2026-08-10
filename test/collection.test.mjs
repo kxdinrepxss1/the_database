@@ -198,6 +198,47 @@ check("no stray placeholder survives into the url",
   /Base|Raw|%E2%80%94/.test(url), false);
 
 
+// --- Wantlist matching -------------------------------------------------------
+// The list itself never leaves the browser. What reaches the server is a
+// search, so every term goes through the same whitelist the search box uses --
+// a wantlist entry must not be able to become part of the query language.
+const wantSrc = slice("function wantlistQuery", "    // ---- Public browsing");
+const { wantlistQuery } = new Function(
+  "searchTerm",
+  wantSrc + "; return {wantlistQuery};",
+)((t) => String(t || "").replace(/[^a-zA-Z0-9 -]/g, " ").replace(/  +/g, " ").trim().slice(0, 60));
+
+check("an empty list asks for nothing at all", wantlistQuery([]), "");
+check("an entry with no usable terms is dropped",
+  wantlistQuery([{ player: "", card_set: "" }]), "");
+
+const oneEntry = wantlistQuery([{ player: "Aaron Judge", card_set: "Topps Chrome" }]);
+// One and() group, so a two-term entry means both, not either. The asterisk
+// stays unencoded on purpose: it is PostgREST's wildcard, not part of a value.
+check("both terms are required together, not either",
+  oneEntry.includes("and(player.ilike.*Aaron%20Judge*,card_set.ilike.*Topps%20Chrome*)"), true);
+check("spaces in a term are encoded", oneEntry.includes("Aaron%20Judge"), true);
+check("it reads the public view, never the cards table",
+  oneEntry.includes("/rest/v1/public_cards"), true);
+
+const two = wantlistQuery([{ player: "Judge" }, { player: "Soto", year: 2024 }]);
+check("several entries become one request, not one each",
+  (two.match(/and\(/g) || []).length, 2);
+check("a year is matched exactly rather than as text",
+  two.includes("year.eq.2024"), true);
+
+// The whole point of the whitelist: parentheses and commas are the query
+// language, so a term containing them must not survive into it.
+const nasty = wantlistQuery([{ player: "a),b.eq.c,(d" }]);
+check("punctuation cannot break out of the group",
+  /a\),b\.eq\.c,\(d/.test(decodeURIComponent(nasty)), false);
+check("but the harmless part of the term is kept",
+  decodeURIComponent(nasty).includes("a  b eq c  d") || decodeURIComponent(nasty).includes("a b eq c d"), true);
+
+// A long list should not become an unbounded URL.
+const many = wantlistQuery(Array.from({ length: 40 }, (_, i) => ({ player: "Player " + i })));
+check("the number of clauses is capped", (many.match(/and\(/g) || []).length, 20);
+
 // --- CSV import --------------------------------------------------------------
 // Columns are matched by name, never position: a file whose columns have to be
 // in a fixed order is a file almost nobody already has.

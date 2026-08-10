@@ -21,12 +21,28 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, interests: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
+  if (url.pathname === "/rest/v1/collector_interests") {
+    if (req.method === "GET") {
+      const id = decodeURIComponent((url.search.match(/user_id=eq\.([^&]+)/) || [])[1] || "");
+      return [200, backend.interests.filter((w) => w.user_id === id)];
+    }
+    if (req.method === "POST") {
+      const row = JSON.parse(body);
+      backend.interests.push({ ...row, id: "want-" + backend.interests.length, created_at: new Date().toISOString() });
+      return [201, null];
+    }
+    if (req.method === "DELETE") {
+      const id = decodeURIComponent((url.search.match(/id=eq\.([^&]+)/) || [])[1] || "");
+      backend.interests = backend.interests.filter((w) => w.id !== id);
+      return [204, null];
+    }
+  }
   if (url.pathname === "/rest/v1/reports") {
     if (backend.failReport) return [500, { message: "could not file" }];
     backend.reports.push(JSON.parse(body || "{}"));
@@ -1097,6 +1113,73 @@ const PUBLIC_ROWS = [
     await showcase.page.locator("#showcaseGrid .fresh").count(), 1);
   check("no errors on the showcase", showcase.errors, []);
   await showcase.context.close();
+}
+
+// --- The wantlist -------------------------------------------------------------
+// What somebody is hunting is more sensitive than what they own, so the list is
+// never published. It is read by its owner and turned into an ordinary search
+// here in the browser; nothing about it reaches the server except a query that
+// looks like any other.
+{
+  backend.cards = []; backend.interests = []; backend.snapshots = [];
+  backend.noSnapshotTable = false; backend.publicQueries = [];
+  backend.publicCards = PUBLIC_ROWS;
+  backend.publicProfiles = [{ handle: "kadin", display_name: "Kadin R", is_listed: true }];
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  await context.addInitScript((user) => {
+    localStorage.setItem("the-database-session", JSON.stringify({
+      access_token: "t", refresh_token: "r",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+    }));
+  }, USER);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${origin}/account`);
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+
+  check("the wantlist starts empty",
+    await page.locator("#wantEmpty:not(.hidden)").count(), 1);
+  check("and says the list is never published",
+    /never published/i.test(await page.locator(".want-form").locator("xpath=..").textContent()), true);
+
+  await page.fill("#wantPlayer", "Aaron Judge");
+  await page.fill("#wantSet", "Topps Chrome");
+  await page.click("#wantForm button");
+  await page.waitForSelector(".want-row");
+  check("an entry is saved", backend.interests.length, 1);
+  check("under the right owner", backend.interests[0].user_id, USER.id);
+  check("and shown back", await page.locator(".want-row").count(), 1);
+
+  // Matching happens on the search page, against the public view only.
+  backend.publicQueries = [];
+  await page.goto(`${origin}/search`);
+  await page.waitForSelector("#wantHeading:not(.hidden)");
+  await page.waitForFunction(() => document.querySelectorAll("#wantGrid .catalog-card").length > 0);
+  check("a matching shared card is found",
+    await page.locator("#wantGrid .catalog-card").count(), 1);
+  check("the match is the right card",
+    (await page.locator("#wantGrid .catalog-card h3").textContent()).includes("Aaron Judge"), true);
+  // The whole privacy claim rests on this: the wantlist becomes a search.
+  check("matching reads the public view, never the cards table",
+    backend.publicQueries.length > 0 && backend.patches.length === 0, true);
+  check("and asks for it in one request, not one per entry",
+    backend.publicQueries.filter((q) => q.includes("or=(and(")).length, 1);
+
+  // Removing an entry has to remove its matches too.
+  await page.goto(`${origin}/account`);
+  await page.waitForSelector(".want-row button");
+  await page.click(".want-row button");
+  await page.waitForFunction(() => document.querySelectorAll(".want-row").length === 0);
+  check("removing an entry deletes it", backend.interests.length, 0);
+
+  await page.goto(`${origin}/search`);
+  await page.waitForTimeout(700);
+  check("with nothing wanted, the section is hidden",
+    await page.locator("#wantHeading.hidden").count(), 1);
+  check("no errors around the wantlist", errors, []);
+  await context.close();
 }
 
 // --- Importing a spreadsheet --------------------------------------------------

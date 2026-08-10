@@ -344,6 +344,65 @@ on public.error_events for select
 using (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------------------
+-- Wantlists and watchlists.
+--
+-- What somebody is hunting is more sensitive than what they own. It says where
+-- the gaps are and what they are willing to pay to fill them, which is exactly
+-- what a seller -- or somebody less pleasant -- would want to know first.
+--
+-- So this table is never published. There is no policy granting anyone but the
+-- owner a read, not even an aggregate one, and no grant to anon at all.
+-- Matching happens in the collector's own browser: their client reads their own
+-- list and queries public_cards with it. The list itself never leaves their
+-- session, so there is no path by which it could be seen.
+--
+-- One table with a kind rather than two nearly identical ones, because two sets
+-- of policies is two chances to get a policy wrong.
+-- ---------------------------------------------------------------------------
+create table if not exists public.collector_interests (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  kind text not null default 'wanted' check (kind in ('wanted', 'watching')),
+  player text,
+  card_set text,
+  year integer,
+  parallel text,
+  created_at timestamptz not null default now(),
+  -- An entry with nothing in it would match the entire database.
+  constraint collector_interests_has_terms check (
+    coalesce(btrim(player), '') <> '' or coalesce(btrim(card_set), '') <> ''
+  )
+);
+
+create index if not exists collector_interests_user_idx
+  on public.collector_interests (user_id, created_at desc);
+
+alter table public.collector_interests enable row level security;
+
+drop policy if exists "Collectors can read their interests" on public.collector_interests;
+create policy "Collectors can read their interests"
+on public.collector_interests for select
+using (auth.uid() = user_id);
+
+drop policy if exists "Collectors can add their interests" on public.collector_interests;
+create policy "Collectors can add their interests"
+on public.collector_interests for insert
+with check (auth.uid() = user_id);
+
+drop policy if exists "Collectors can remove their interests" on public.collector_interests;
+create policy "Collectors can remove their interests"
+on public.collector_interests for delete
+using (auth.uid() = user_id);
+
+-- Deliberately no policy granting anybody else a read, and no grant to anon.
+
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant select, insert, delete on public.collector_interests to authenticated';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Reports.
 --
 -- The directory lists every collector who opts in, and handles are checked for
@@ -564,7 +623,8 @@ begin
     where (
         (p.schemaname = 'public'
          and p.tablename in ('cards','collector_profiles','scan_events',
-                             'collection_snapshots','error_events','reports'))
+                             'collection_snapshots','error_events','reports',
+                             'collector_interests'))
         or (p.schemaname = 'storage' and p.tablename = 'objects'
             and coalesce(p.qual, '') || coalesce(p.with_check, '') like '%card-photos%')
       )
@@ -586,6 +646,9 @@ begin
         'Collectors can record their errors',
         'Collectors can read their errors',
         'Anyone can file a report',
+        'Collectors can read their interests',
+        'Collectors can add their interests',
+        'Collectors can remove their interests',
         'Anyone can read photos of shared cards',
         'Collectors can read their card photos',
         'Collectors can upload their card photos',
@@ -633,6 +696,7 @@ begin
       ('scan_events','user_id'),
       ('error_events','user_id'), ('error_events','app_version'),
       ('reports','reported_handle'), ('reports','reason'),
+      ('collector_interests','user_id'), ('collector_interests','kind'),
       ('public_cards','handle'), ('public_cards','player'), ('public_cards','current_value'),
       ('public_cards','front_image_path')
     ) as t(relname, colname)
@@ -685,7 +749,8 @@ begin
   -- the table is simply open, and every rule above becomes decoration.
   for rec in
     select unnest(array['cards','collector_profiles','scan_events',
-                        'collection_snapshots','error_events','reports']) as relname
+                        'collection_snapshots','error_events','reports',
+                        'collector_interests']) as relname
   loop
     if not exists (
       select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
