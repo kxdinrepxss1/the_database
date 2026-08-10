@@ -14,7 +14,10 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - one-click export of the whole collection, photos included
 - spreadsheet import, matching columns by name rather than position
 - bulk editing, so an imported collection can be put away a shelf at a time
+- a feed of what collectors you follow have added, grouped into drops
+- private following: nobody is told you follow them, and only you see your followers
 - a private wantlist, matched against shared collections without ever being published
+- a private watchlist of players and teams, matched the same way
 - install-to-home-screen support
 
 ## Project structure
@@ -186,6 +189,32 @@ point on a trend line, whereas a card is the collector's actual data. Writes are
 debounced, so a burst of price edits leaves one point rather than one per
 keystroke.
 
+## The feed
+
+`/feed` is built from three private lists and one public view. Everything on it
+comes from `public_cards`, so a card appears only if its owner marked it shared
+*and* their profile is public. Following somebody grants no read at all.
+
+**Drops.** A card at a time is the wrong unit: somebody photographing a box
+posts thirty times and buries everyone else. Cards added close together by the
+same collector are shown as one drop. The ten-minute window chains — each card
+within ten minutes of the one before it joins the same drop — so a long sitting
+at the scanner stays a single entry however long it runs. Grouping happens when
+the feed is read, in the browser. There is no posts table, nothing is written
+when a drop is formed, and changing the window is a one-line change rather than
+a migration.
+
+**Following is private in both directions.** The policy on `collector_follows`
+returns a row only to the two people named in it: the follower, and the person
+followed. Nobody else can read who follows whom, and that includes counts — a
+count is a weaker leak than a list, but it is still somebody else's information,
+and the rule as stated has no exception for it. Your follower count appears on
+your own account page and nowhere else.
+
+`public_cards` carries a handle and no user id, on purpose. Turning followed ids
+into handles costs the feed one extra request and keeps the view that narrow. It
+also means a collector who changes their handle stays followed.
+
 ## Wantlists
 
 **Account → Wantlist** records cards a collector is hunting. It is **never
@@ -210,6 +239,14 @@ a set are rejected by a check constraint, since they would match everything.
 Matches appear above the collector directory on **/search**, drawn from
 `public_cards` like everything else there — so a wantlist can never surface a
 card its owner has not shared.
+
+### Watching
+
+The same table holds a second kind of entry: a player or a team worth seeing
+rather than one card being hunted. `kind` tells them apart, they live under the
+same policies, and they are published exactly as much as each other, which is to
+say not at all. Both are matched in the browser, against the public view, and
+what reaches the server is a search that looks like any other search.
 
 ## Reports
 

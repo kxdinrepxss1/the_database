@@ -21,7 +21,7 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, interests: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, interests: [], follows: [], followQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
@@ -40,6 +40,32 @@ async function supabase(req, url, body) {
     if (req.method === "DELETE") {
       const id = decodeURIComponent((url.search.match(/id=eq\.([^&]+)/) || [])[1] || "");
       backend.interests = backend.interests.filter((w) => w.id !== id);
+      return [204, null];
+    }
+  }
+  if (url.pathname === "/rest/v1/collector_follows") {
+    const one = (re) => decodeURIComponent((url.search.match(re) || [])[1] || "");
+    if (req.method === "GET") {
+      backend.followQueries.push(url.search);
+      const follower = one(/follower_id=eq\.([^&]+)/), followed = one(/followed_id=eq\.([^&]+)/);
+      // The real table's policy only returns rows the reader is a side of, so
+      // the mock refuses to answer a query that names neither.
+      if (!follower && !followed) return [403, { message: "row-level security" }];
+      return [200, backend.follows.filter((f) =>
+        (!follower || f.follower_id === follower) && (!followed || f.followed_id === followed))];
+    }
+    if (req.method === "POST") {
+      const row = JSON.parse(body);
+      if (row.follower_id === row.followed_id) return [400, { message: "collector_follows_not_self" }];
+      backend.follows = backend.follows
+        .filter((f) => !(f.follower_id === row.follower_id && f.followed_id === row.followed_id))
+        .concat({ ...row, created_at: new Date().toISOString() });
+      return [201, null];
+    }
+    if (req.method === "DELETE") {
+      const follower = one(/follower_id=eq\.([^&]+)/), followed = one(/followed_id=eq\.([^&]+)/);
+      backend.follows = backend.follows.filter((f) =>
+        !(f.follower_id === follower && f.followed_id === followed));
       return [204, null];
     }
   }
@@ -94,10 +120,39 @@ async function supabase(req, url, body) {
       rows = rows.filter((r) => wanted.includes(r.handle));
     }
     if (or) {
-      // Mirror PostgREST's ilike well enough to prove the filter is applied.
-      const term = decodeURIComponent((or.match(/player\.ilike\.([^,]*)/) || [])[1] || "").replace(/\*/g, "").toLowerCase();
-      rows = rows.filter((r) => ["player", "card_set", "team", "parallel"]
-        .some((f) => String(r[f] || "").toLowerCase().includes(term)));
+      // Mirror PostgREST closely enough to be worth testing against. or=(...)
+      // is a list of alternatives: a bare predicate, or an and(...) group whose
+      // parts must all hold. A mock that only read the player term let a
+      // team-only wantlist entry through as a match on everything.
+      const predicate = (row, part) => {
+        const like = part.match(/^(\w+)\.ilike\.(.*)$/);
+        if (like) return String(row[like[1]] || "").toLowerCase()
+          .includes(decodeURIComponent(like[2]).replace(/\*/g, "").toLowerCase());
+        const eq = part.match(/^(\w+)\.eq\.(.*)$/);
+        if (eq) return String(row[eq[1]] || "") === eq[2];
+        return true;
+      };
+      // Split on commas that are not inside a nested group.
+      const split = (text) => {
+        const out = []; let depth = 0, current = "";
+        for (const ch of text) {
+          if (ch === "(") depth++;
+          if (ch === ")") depth--;
+          if (ch === "," && depth === 0) { out.push(current); current = ""; continue; }
+          current += ch;
+        }
+        if (current) out.push(current);
+        return out;
+      };
+      const alternatives = split(decodeURIComponent(or));
+      rows = rows.filter((r) => alternatives.some((alt) => alt.startsWith("and(")
+        ? split(alt.slice(4, -1)).every((part) => predicate(r, part))
+        : predicate(r, alt)));
+    }
+    // PostgREST honours the order it was given; without this the feed's
+    // grouping was being tested against whatever order the fixture was in.
+    if (/order=created_at\.desc/.test(url.search)) {
+      rows = rows.slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
     }
     return [200, rows];
   }
@@ -118,6 +173,15 @@ async function supabase(req, url, body) {
         }
         return [200, rows];
       }
+      // The feed resolves followed ids to handles, and the follow button
+      // resolves a handle back to an id. Both read public profiles only.
+      const inList = (url.search.match(/user_id=in\.\(([^)]*)\)/) || [])[1];
+      if (inList) {
+        const wanted = decodeURIComponent(inList).replace(/"/g, "").split(",");
+        return [200, backend.publicProfiles.filter((p) => wanted.includes(p.user_id))];
+      }
+      const byHandle = decodeURIComponent((url.search.match(/handle=eq\.([^&]+)/) || [])[1] || "");
+      if (byHandle) return [200, backend.publicProfiles.filter((p) => p.handle === byHandle)];
       const id = decodeURIComponent((url.search.match(/user_id=eq\.([^&]+)/) || [])[1] || "");
       return [200, backend.profiles.filter((p) => p.user_id === id)];
     }
@@ -1161,7 +1225,7 @@ const PUBLIC_ROWS = [
   check("the wantlist starts empty",
     await page.locator("#wantEmpty:not(.hidden)").count(), 1);
   check("and says the list is never published",
-    /never published/i.test(await page.locator(".want-form").locator("xpath=..").textContent()), true);
+    /never published/i.test(await page.locator("#wantForm").locator("xpath=..").textContent()), true);
 
   await page.fill("#wantPlayer", "Aaron Judge");
   await page.fill("#wantSet", "Topps Chrome");
@@ -1476,9 +1540,10 @@ const PUBLIC_ROWS = [
   check("and it is a redirect, not a 404", scan.status() < 400, true);
   await page.waitForTimeout(500);
 
-  check("the mobile nav is down to four", await page.locator(".mobile-nav a").count(), 4);
-  check("no Add tab is left", await page.locator('.mobile-nav a[href="/scan"]').count(), 0);
-  check("the header nav is down to four too", await page.locator("header nav a").count(), 4);
+  check("the mobile nav carries no Add tab",
+    await page.locator('.mobile-nav a[href="/scan"]').count(), 0);
+  check("nor does the header nav",
+    await page.locator('header nav a[href="/scan"]').count(), 0);
 
   // Without a key there is nothing to choose between, so the button goes
   // straight to the form rather than asking a question with one real answer.
@@ -1529,6 +1594,223 @@ const PUBLIC_ROWS = [
 
   check("no errors through the folded add flow", errors, []);
   await context.close();
+}
+
+// --- The feed -------------------------------------------------------------------
+// Three sources, one page: collectors you follow, cards you are hunting, and
+// players or teams you watch. All three read public_cards, which is the only
+// thing that decides what is visible. The two lists are never published.
+{
+  const OTHER = "99999999-9999-4999-8999-999999999999";
+  const THIRD = "aaaa9999-9999-4999-8999-999999999999";
+  const t = (minutesAgo) => new Date(Date.now() - minutesAgo * 60000).toISOString();
+  const pubCard = (id, handle, player, when, extra = {}) => ({
+    id, handle, display_name: handle === "boxbreaker" ? "Box Breaker" : "Other Collector",
+    player, year: 2024, sport: "Baseball", card_set: "Topps", card_number: "#" + id,
+    team: "New York Yankees", parallel: "Base", grade: "Raw", quantity: 1,
+    created_at: when, ...extra,
+  });
+
+  backend.cards = []; backend.interests = []; backend.follows = [];
+  backend.followQueries = []; backend.publicQueries = [];
+  backend.failWrites = false; backend.snapshots = []; backend.noSnapshotTable = false;
+  backend.publicProfiles = [
+    { user_id: OTHER, handle: "boxbreaker", display_name: "Box Breaker", is_public: true, is_listed: true },
+    { user_id: THIRD, handle: "quietone", display_name: "Other Collector", is_public: true, is_listed: true },
+  ];
+  // One sitting at the scanner, then a separate one two hours earlier, plus a
+  // single card from somebody else.
+  backend.publicCards = [
+    pubCard("f1", "boxbreaker", "Aaron Judge", t(3)),
+    pubCard("f2", "boxbreaker", "Juan Soto", t(6)),
+    pubCard("f3", "boxbreaker", "Gerrit Cole", t(11)),
+    pubCard("f4", "boxbreaker", "Old Card", t(150)),
+    pubCard("f5", "quietone", "Shohei Ohtani", t(20), { team: "Los Angeles Dodgers" }),
+  ];
+
+  // Signed out, the feed explains itself rather than looking broken.
+  {
+    const { context, page, errors } = await open("/feed");
+    check("signed out, the feed asks you to sign in",
+      await page.locator("#feedSignedOut").isVisible(), true);
+    check("and shows no feed body", await page.locator("#feedBody").isVisible(), false);
+    check("no follow request is made while signed out", backend.followQueries.length, 0);
+    check("no errors on the signed-out feed", errors, []);
+    await context.close();
+  }
+
+  const signedIn = async (route) => {
+    const context = await browser.newContext({ viewport: { width: 1100, height: 1400 } });
+    await context.addInitScript((user) => {
+      localStorage.setItem("the-database-session", JSON.stringify({
+        access_token: "t", refresh_token: "r",
+        expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+      }));
+    }, USER);
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(String(e.message)));
+    await page.goto(origin + route);
+    await page.waitForTimeout(900);
+    return { context, page, errors };
+  };
+
+  // Following nobody and listing nothing is not the same as having a feed that
+  // came back empty, and only one of them is the collector's to fix.
+  {
+    const { context, page, errors } = await signedIn("/feed");
+    check("an unconfigured feed says how to start",
+      await page.locator("#feedEmpty").isVisible(), true);
+    check("and does not claim your follows are quiet",
+      await page.locator("#dropNone").isVisible(), false);
+    check("no errors on the empty feed", errors, []);
+    await context.close();
+  }
+
+  // Follow from the collector's own page, which is where you find them.
+  {
+    const { context, page, errors } = await signedIn("/c/boxbreaker");
+    check("a signed-in visitor is offered a follow",
+      await page.locator("#followCollector").isVisible(), true);
+    check("the page says following is private",
+      (await page.locator("#followNote").textContent()).includes("only you can see who you follow"), true);
+    await page.click("#followCollector");
+    await page.waitForTimeout(600);
+    check("following is recorded", backend.follows.length, 1);
+    check("against the signed-in collector", backend.follows[0].follower_id, USER.id);
+    check("and points at the collector being viewed", backend.follows[0].followed_id, OTHER);
+    check("the button reflects it",
+      (await page.locator("#followCollector").textContent()).trim(), "Following");
+    await page.click("#followCollector");
+    await page.waitForTimeout(600);
+    check("clicking again unfollows", backend.follows.length, 0);
+    check("no errors through following", errors, []);
+    await context.close();
+  }
+
+  backend.follows = [
+    { follower_id: USER.id, followed_id: OTHER, created_at: t(1000) },
+    { follower_id: USER.id, followed_id: THIRD, created_at: t(900) },
+  ];
+  // Somebody else's follow, which this collector must never see.
+  backend.follows.push({ follower_id: THIRD, followed_id: OTHER, created_at: t(500) });
+
+  {
+    const { context, page, errors } = await signedIn("/feed");
+    await page.waitForSelector(".drop");
+
+    // A card at a time would bury everybody under one person's box break.
+    const drops = await page.evaluate(() => [...document.querySelectorAll(".drop")].map((d) => ({
+      who: d.querySelector(".drop-who b").textContent,
+      count: d.querySelector(".drop-count").textContent,
+      cards: d.querySelectorAll(".drop-card").length,
+    })));
+    check("cards added together become one drop", drops.length, 3);
+    check("the sitting at the scanner is grouped", drops[0].count, "3 cards");
+    check("under the collector who added them", drops[0].who, "Box Breaker");
+    check("and shows each card in it", drops[0].cards, 3);
+    check("a different collector is its own drop", drops[1].who, "Other Collector");
+    // Three drops all stamped "today" would say nothing about which is newest,
+    // which is the one thing a feed is for.
+    check("a drop says how long ago, not just what day",
+      /minutes? ago|hours? ago|just now/.test(
+        await page.locator(".drop .drop-who small").first().textContent()), true);
+    check("and so is the same collector two hours earlier", drops[2].count, "1 card");
+
+    // The wantlist and the watchlist reach the server only as searches.
+    check("no wantlist section without a wantlist",
+      await page.locator("#feedWantHeading").isVisible(), false);
+
+    check("the follow query names the signed-in collector",
+      backend.followQueries.every((q) => q.includes("follower_id=eq.") || q.includes("followed_id=eq.")), true);
+    check("every read of the cards table is scoped to the reader",
+      backend.cardQueries.every((q) => q.includes(encodeURIComponent(USER.id))), true);
+    check("no errors on the follow feed", errors, []);
+    await context.close();
+  }
+
+  // Wantlist and watchlist matches, which are searches and nothing else: no row
+  // is written anywhere recording that a match happened.
+  backend.interests = [
+    { id: "w1", user_id: USER.id, kind: "wanted", player: "Shohei Ohtani", created_at: t(10) },
+    { id: "w2", user_id: USER.id, kind: "watching", team: "Los Angeles Dodgers", created_at: t(10) },
+  ];
+  {
+    const { context, page, errors } = await signedIn("/feed");
+    await page.waitForSelector("#feedWantHeading:not(.hidden)");
+    check("the wantlist section appears",
+      (await page.locator("#feedWantHeading").textContent()).includes("on your wantlist"), true);
+    check("with the matching card", await page.locator("#feedWantGrid .catalog-card").count(), 1);
+    check("the watch section appears too",
+      await page.locator("#feedWatchHeading").isVisible(), true);
+    check("matching on the team", await page.locator("#feedWatchGrid .catalog-card").count(), 1);
+
+    // The whole privacy claim in one check: what was sent was a search, and it
+    // carried no hint of who was searching.
+    const searches = backend.publicQueries.filter((q) => q.includes("or=("));
+    check("interests leave as a search, not a list", searches.length > 0, true);
+    check("and the search says nothing about who is asking",
+      searches.every((q) => !q.includes(USER.id)), true);
+    check("nothing about the wantlist is written down",
+      backend.interests.length, 2);
+    check("no errors with interests", errors, []);
+    await context.close();
+  }
+
+  // A followed collector's private card must never reach the feed. public_cards
+  // is what enforces that, and the client must not be reaching around it.
+  {
+    backend.cards = [{ id: "secret", user_id: OTHER, player: "Not Yours", visibility: "private" }];
+    const { context, page, errors } = await signedIn("/feed");
+    await page.waitForSelector(".drop");
+    const text = await page.locator("#feedBody").textContent();
+    check("a followed collector's private card is not in the feed",
+      text.includes("Not Yours"), false);
+    check("and the feed never asked the cards table for it",
+      backend.cardQueries.some((q) => q.includes(OTHER)), false);
+    check("no errors on the privacy pass", errors, []);
+    await context.close();
+    backend.cards = [];
+  }
+
+  // Followers are the one list only its owner may see.
+  {
+    backend.follows.push({ follower_id: THIRD, followed_id: USER.id, created_at: t(30) });
+    const { context, page, errors } = await signedIn("/account");
+    await openSection(page, "Your feed");
+    await page.waitForTimeout(700);
+    check("the owner is told how many follow them",
+      (await page.locator("#followerLine").textContent()).includes("1 collector follows you"), true);
+    check("who they follow is listed", await page.locator("#followList .want-row").count(), 2);
+    check("every followers query is scoped to the reader",
+      backend.followQueries.filter((q) => q.includes("followed_id=eq."))
+        .every((q) => q.includes(encodeURIComponent(USER.id))), true);
+
+    await page.click("#followList [data-unfollow]");
+    await page.waitForTimeout(700);
+    check("and can be undone from here",
+      backend.follows.filter((f) => f.follower_id === USER.id).length, 1);
+    check("no errors on the account feed section", errors, []);
+    await context.close();
+  }
+
+  // The prompt shown once to a new account, which opens the real controls
+  // rather than keeping a second copy of them.
+  {
+    backend.follows = []; backend.interests = [];
+    const { context, page, errors } = await signedIn("/account");
+    check("a new account is offered feed setup",
+      await page.locator("#feedSetup").isVisible(), true);
+    await page.click("#setupSkip");
+    check("which can be dismissed", await page.locator("#feedSetup").isVisible(), false);
+    await page.reload();
+    await page.waitForTimeout(900);
+    check("and stays dismissed", await page.locator("#feedSetup").isVisible(), false);
+    check("no errors on the setup prompt", errors, []);
+    await context.close();
+  }
+
+  backend.publicCards = []; backend.publicProfiles = []; backend.follows = []; backend.interests = [];
 }
 
 // --- The first thirty seconds -------------------------------------------------

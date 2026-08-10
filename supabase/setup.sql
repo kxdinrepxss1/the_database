@@ -371,6 +371,7 @@ create table if not exists public.collector_interests (
   -- An entry with nothing in it would match the entire database.
   constraint collector_interests_has_terms check (
     coalesce(btrim(player), '') <> '' or coalesce(btrim(card_set), '') <> ''
+      or coalesce(btrim(team), '') <> ''
   )
 );
 
@@ -399,6 +400,78 @@ using (auth.uid() = user_id);
 do $$ begin
   if exists (select 1 from pg_roles where rolname = 'authenticated') then
     execute 'grant select, insert, delete on public.collector_interests to authenticated';
+  end if;
+end $$;
+
+-- A team is a thing to watch as much as a player is ("anything Yankees"), and
+-- the table predates the feed that needed it.
+alter table public.collector_interests add column if not exists team text;
+
+-- Widened rather than replaced: the rule is still that an entry must say
+-- something, but "anything Yankees" is now something it can say. Tables created
+-- before the team column carry the narrower check and have to be re-stated.
+alter table public.collector_interests drop constraint if exists collector_interests_has_terms;
+alter table public.collector_interests add constraint collector_interests_has_terms check (
+  coalesce(btrim(player), '') <> '' or coalesce(btrim(card_set), '') <> ''
+    or coalesce(btrim(team), '') <> ''
+);
+
+-- ---------------------------------------------------------------------------
+-- Follows.
+--
+-- Who follows whom is not public. The rule the collector asked for is that the
+-- only person allowed to see somebody's followers is that person, so the read
+-- policy matches on either side of the row and nothing else:
+--
+--   * follower_id = auth.uid()  -- the list of people I follow, which I wrote
+--   * followed_id = auth.uid()  -- the list of people following me, which is
+--                                  mine to see and nobody else's
+--
+-- That means follower counts are not public either. A count is a weaker leak
+-- than a list, but it is still somebody else's information, and the rule as
+-- stated does not carve out an exception for it.
+--
+-- Following somebody does not grant any read. The feed is built entirely from
+-- public_cards, which already requires the card to be shared and the profile to
+-- be public, so a follow can never widen what its owner can see.
+-- ---------------------------------------------------------------------------
+create table if not exists public.collector_follows (
+  follower_id uuid not null references auth.users(id) on delete cascade,
+  followed_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (follower_id, followed_id),
+  -- Following yourself would put your own cards in your own feed.
+  constraint collector_follows_not_self check (follower_id <> followed_id)
+);
+
+create index if not exists collector_follows_follower_idx
+  on public.collector_follows (follower_id, created_at desc);
+create index if not exists collector_follows_followed_idx
+  on public.collector_follows (followed_id);
+
+alter table public.collector_follows enable row level security;
+
+drop policy if exists "Collectors can read their own follows" on public.collector_follows;
+create policy "Collectors can read their own follows"
+on public.collector_follows for select
+using (auth.uid() = follower_id or auth.uid() = followed_id);
+
+drop policy if exists "Collectors can follow" on public.collector_follows;
+create policy "Collectors can follow"
+on public.collector_follows for insert
+with check (auth.uid() = follower_id);
+
+-- Only the follower can undo a follow. There is deliberately no update policy:
+-- a follow has nothing to change, and an editable one could be repointed at
+-- somebody who never agreed to it.
+drop policy if exists "Collectors can unfollow" on public.collector_follows;
+create policy "Collectors can unfollow"
+on public.collector_follows for delete
+using (auth.uid() = follower_id);
+
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant select, insert, delete on public.collector_follows to authenticated';
   end if;
 end $$;
 
@@ -624,7 +697,7 @@ begin
         (p.schemaname = 'public'
          and p.tablename in ('cards','collector_profiles','scan_events',
                              'collection_snapshots','error_events','reports',
-                             'collector_interests'))
+                             'collector_interests','collector_follows'))
         or (p.schemaname = 'storage' and p.tablename = 'objects'
             and coalesce(p.qual, '') || coalesce(p.with_check, '') like '%card-photos%')
       )
@@ -649,6 +722,9 @@ begin
         'Collectors can read their interests',
         'Collectors can add their interests',
         'Collectors can remove their interests',
+        'Collectors can read their own follows',
+        'Collectors can follow',
+        'Collectors can unfollow',
         'Anyone can read photos of shared cards',
         'Collectors can read their card photos',
         'Collectors can upload their card photos',
@@ -697,6 +773,8 @@ begin
       ('error_events','user_id'), ('error_events','app_version'),
       ('reports','reported_handle'), ('reports','reason'),
       ('collector_interests','user_id'), ('collector_interests','kind'),
+      ('collector_interests','team'),
+      ('collector_follows','follower_id'), ('collector_follows','followed_id'),
       ('public_cards','handle'), ('public_cards','player'), ('public_cards','current_value'),
       ('public_cards','front_image_path')
     ) as t(relname, colname)
@@ -750,7 +828,7 @@ begin
   for rec in
     select unnest(array['cards','collector_profiles','scan_events',
                         'collection_snapshots','error_events','reports',
-                        'collector_interests']) as relname
+                        'collector_interests','collector_follows']) as relname
   loop
     if not exists (
       select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
