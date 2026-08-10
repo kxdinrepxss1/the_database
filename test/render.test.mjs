@@ -6,7 +6,7 @@ const env = {
   SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
 };
 
-const routes = ["/", "/collection", "/account", "/reset-password"];
+const routes = ["/", "/collection", "/feed", "/account", "/reset-password"];
 let failed = false;
 
 for (const route of routes) {
@@ -81,12 +81,14 @@ const withAi = await collectionPage({ OPENAI_API_KEY: "sk-test" });
 check("the redirect points at the collection",
   (await worker.fetch(new Request("https://x/scan"), env)).headers.get("location"),
   "https://x/collection");
-check("the header nav has four entries",
-  (withoutAi.match(/<nav>[\s\S]*?<\/nav>/)[0].match(/<a /g) || []).length, 4);
+check("the header nav has five entries",
+  (withoutAi.match(/<nav>[\s\S]*?<\/nav>/)[0].match(/<a /g) || []).length, 5);
 check("so does the mobile nav",
-  (withoutAi.match(/<nav class="mobile-nav"[\s\S]*?<\/nav>/)[0].match(/<a /g) || []).length, 4);
-check("and the mobile bar is laid out for four",
-  withoutAi.includes("grid-template-columns:repeat(4,1fr)"), true);
+  (withoutAi.match(/<nav class="mobile-nav"[\s\S]*?<\/nav>/)[0].match(/<a /g) || []).length, 5);
+check("and the mobile bar is laid out for five",
+  withoutAi.includes("grid-template-columns:repeat(5,1fr)"), true);
+check("the fifth is the feed, not a second way to add",
+  withoutAi.includes('href="/feed"') && !withoutAi.includes('href="/scan"'), true);
 check("no add tab is left in the nav",
   /<b>◎<\/b>/.test(withoutAi.match(/<nav class="mobile-nav"[\s\S]*?<\/nav>/)[0]), false);
 check("no stale Scan label", />Scan</.test(withoutAi), false);
@@ -176,7 +178,7 @@ check("the reset form is not on the account page",
 check("the account section no longer claims the reset page's class",
   (accountHtml.match(/class="account-page/g) || []).length, 1);
 check("the account page is built from collapsible sections",
-  (accountHtml.match(/class="account-section"/g) || []).length, 4);
+  (accountHtml.match(/class="account-section"/g) || []).length, 5);
 check("every section is closed by default",
   /<details class="account-section" open/.test(accountHtml), false);
 

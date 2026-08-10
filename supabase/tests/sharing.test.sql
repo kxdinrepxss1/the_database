@@ -422,3 +422,131 @@ end $$;
 
 delete from public.collector_interests
  where user_id = '11111111-1111-1111-1111-111111111111';
+
+-- ---------------------------------------------------------------------------
+-- Follows.
+--
+-- The rule is that the only person allowed to see somebody's followers is that
+-- person. Everything below is an attempt to see a third party's follows.
+-- ---------------------------------------------------------------------------
+grant select, insert, delete on public.collector_follows to authenticated;
+
+insert into auth.users (id, email) values
+  ('88888888-8888-8888-8888-888888888888', 'follower@example.com')
+on conflict do nothing;
+
+delete from public.collector_follows
+ where follower_id in ('11111111-1111-1111-1111-111111111111',
+                       '22222222-2222-2222-2222-222222222222',
+                       '88888888-8888-8888-8888-888888888888')
+    or followed_id in ('11111111-1111-1111-1111-111111111111',
+                       '22222222-2222-2222-2222-222222222222',
+                       '88888888-8888-8888-8888-888888888888');
+
+-- 88 follows 11.
+set role authenticated;
+set request.jwt.claim.sub = '88888888-8888-8888-8888-888888888888';
+insert into public.collector_follows (follower_id, followed_id)
+values ('88888888-8888-8888-8888-888888888888', '11111111-1111-1111-1111-111111111111');
+
+select 'a collector can read who they follow: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collector_follows;
+
+do $$
+begin
+  insert into public.collector_follows (follower_id, followed_id)
+  values ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111');
+  raise notice 'nobody can put a follow in somebody else name: FAIL';
+exception when others then
+  raise notice 'nobody can put a follow in somebody else name: PASS';
+end $$;
+
+do $$
+begin
+  insert into public.collector_follows (follower_id, followed_id)
+  values ('88888888-8888-8888-8888-888888888888', '88888888-8888-8888-8888-888888888888');
+  raise notice 'a collector cannot follow themselves: FAIL';
+exception when others then
+  raise notice 'a collector cannot follow themselves: PASS';
+end $$;
+reset role;
+
+-- The followed collector may see who follows them. That is the one read this
+-- table grants beyond your own rows.
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+select 'the followed collector can see their followers: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collector_follows;
+reset role;
+
+-- Nobody else may, in either direction.
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+select 'a third party cannot see who follows whom: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.collector_follows;
+
+select 'a third party cannot even count somebody followers: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_follows
+where followed_id = '11111111-1111-1111-1111-111111111111';
+
+-- Undoing somebody else's follow would be a way to quietly cut them off.
+do $$
+declare gone int;
+begin
+  delete from public.collector_follows
+   where follower_id = '88888888-8888-8888-8888-888888888888';
+  get diagnostics gone = row_count;
+  if gone = 0 then
+    raise notice 'a third party cannot unfollow on your behalf: PASS';
+  else
+    raise notice 'a third party cannot unfollow on your behalf: FAIL (% rows)', gone;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'a third party cannot unfollow on your behalf: PASS';
+end $$;
+reset role;
+
+-- anon is granted nothing on this table, so the read is refused outright
+-- rather than returning an empty set. Either would pass; the error is stronger.
+do $$
+declare seen int;
+begin
+  set local role anon;
+  select count(*) into seen from public.collector_follows;
+  if seen = 0 then
+    raise notice 'an anonymous visitor sees no follows at all: PASS';
+  else
+    raise notice 'an anonymous visitor sees no follows at all: FAIL (%)', seen;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'an anonymous visitor sees no follows at all: PASS';
+end $$;
+reset role;
+
+-- Following somebody must not widen what their follower can see: the feed is
+-- built from public_cards, which still requires the card to be shared.
+set role authenticated;
+set request.jwt.claim.sub = '88888888-8888-8888-8888-888888888888';
+select 'following does not reveal the private card: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.public_cards where player = 'Private Card';
+
+select 'a follower still cannot read the raw cards table: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.cards where user_id = '11111111-1111-1111-1111-111111111111';
+
+-- And the follower can undo their own follow.
+delete from public.collector_follows
+ where follower_id = '88888888-8888-8888-8888-888888888888';
+select 'a collector can unfollow: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.collector_follows;
+reset role;
+
+delete from public.collector_follows
+ where follower_id = '88888888-8888-8888-8888-888888888888'
+    or followed_id = '88888888-8888-8888-8888-888888888888';

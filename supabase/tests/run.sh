@@ -22,8 +22,22 @@ run() {
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$1" 2>&1 | tee -a "$output"
 }
 
-run supabase/tests/stub-supabase.sql >/dev/null
-run supabase/setup.sql >/dev/null
+# Applying the schema is quiet on success -- it is pages of "already exists"
+# notices -- but an error here is the entire story, and discarding stdout used
+# to discard that too: a setup.sql that would not apply failed the run with no
+# output at all, which is a worse thing to be handed than the error.
+apply() {
+  if ! run "$1" >/dev/null; then
+    echo "$1 did not apply:"
+    # Matched case-sensitively on psql's own prefix: "error_events" appears in
+    # a dozen harmless notices and would bury the one line that matters.
+    grep -E "(ERROR|FATAL):" "$output" | head -20 || tail -20 "$output"
+    exit 1
+  fi
+}
+
+apply supabase/tests/stub-supabase.sql
+apply supabase/setup.sql
 run supabase/tests/policies.test.sql
 run supabase/tests/sharing.test.sql
 run supabase/tests/rogue-policy.test.sql
