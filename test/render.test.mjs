@@ -6,7 +6,7 @@ const env = {
   SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
 };
 
-const routes = ["/", "/collection", "/scan", "/account", "/reset-password"];
+const routes = ["/", "/collection", "/account", "/reset-password"];
 let failed = false;
 
 for (const route of routes) {
@@ -31,9 +31,10 @@ for (const route of routes) {
 }
 
 // Non-page routes
-// /pricing was replaced by inline pricing; keep it pointing somewhere useful
-// for anyone holding a bookmark or a cached service-worker entry.
-for (const [path, expect] of [["/manifest.webmanifest", 200], ["/sw.js", 200], ["/nope", 404], ["/pricing", 302]]) {
+// /pricing was replaced by inline pricing and /scan was folded into the
+// collection; both keep pointing somewhere useful for anyone holding a
+// bookmark, a cached service-worker entry, or an installed home-screen icon.
+for (const [path, expect] of [["/manifest.webmanifest", 200], ["/sw.js", 200], ["/nope", 404], ["/pricing", 302], ["/scan", 302]]) {
   const res = await worker.fetch(new Request("https://x" + path), env);
   const label = res.status === expect ? "ok  " : "FAIL";
   if (res.status !== expect) failed = true;
@@ -69,34 +70,49 @@ const check = (name, got, want) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
 };
 
-const scanPage = async (extraEnv) =>
-  (await worker.fetch(new Request("https://x/scan"), { ...env, ...extraEnv })).text();
+const collectionPage = async (extraEnv) =>
+  (await worker.fetch(new Request("https://x/collection"), { ...env, ...extraEnv })).text();
 
-const withoutAi = await scanPage({});
-const withAi = await scanPage({ OPENAI_API_KEY: "sk-test" });
+const withoutAi = await collectionPage({});
+const withAi = await collectionPage({ OPENAI_API_KEY: "sk-test" });
 
-// The nav must not label the page as something the deployment cannot do. With
-// no key the page is a photo form, and calling it "Scan" invites a tester to
-// think it is broken rather than absent.
-check("the nav says Add without a key", /class="[^"]*"><b>◎<\/b>Add</.test(withoutAi), true);
-check("and Scan with one", /class="[^"]*"><b>◎<\/b>Scan</.test(withAi), true);
-check("no stale Scan label without a key", />Scan</.test(withoutAi), false);
-check("the label follows the page copy",
-  withoutAi.includes("Snap it.") && !withoutAi.includes("Point. Scan."), true);
+// The Add tab and the collection's own add button were two doors into the same
+// card form. There is one door now, on the page the cards are on.
+check("the redirect points at the collection",
+  (await worker.fetch(new Request("https://x/scan"), env)).headers.get("location"),
+  "https://x/collection");
+check("the header nav has four entries",
+  (withoutAi.match(/<nav>[\s\S]*?<\/nav>/)[0].match(/<a /g) || []).length, 4);
+check("so does the mobile nav",
+  (withoutAi.match(/<nav class="mobile-nav"[\s\S]*?<\/nav>/)[0].match(/<a /g) || []).length, 4);
+check("and the mobile bar is laid out for four",
+  withoutAi.includes("grid-template-columns:repeat(4,1fr)"), true);
+check("no add tab is left in the nav",
+  /<b>◎<\/b>/.test(withoutAi.match(/<nav class="mobile-nav"[\s\S]*?<\/nav>/)[0]), false);
+check("no stale Scan label", />Scan</.test(withoutAi), false);
+check("the collection offers one way in",
+  (withoutAi.match(/id="addCard">＋ Add card</g) || []).length, 1);
+check("and it offers both starting points",
+  withoutAi.includes("Enter the details") && withoutAi.includes("id=\"choosePhotos\""), true);
 
+// Which of those two the photo path is called depends on SCAN_AI, which is
+// decided at runtime inside the modal template -- both strings are in the
+// source either way, so the browser suite checks the wording that renders.
 check("SCAN_AI is false without a key", withoutAi.includes("SCAN_AI=false"), true);
 check("SCAN_AI is true with a key", withAi.includes("SCAN_AI=true"), true);
+
+// The install prompt lived on the Add page. It has to survive that page going
+// away, and it is referenced by the script on every route.
+for (const route of routes) {
+  const html = await (await worker.fetch(new Request("https://x" + route), env)).text();
+  check(`the install button is present on ${route}`, html.includes('id="installApp"'), true);
+}
 
 // capture="environment" forces the camera and hides the photo library on phones.
 for (const [label, html] of [["without AI", withoutAi], ["with AI", withAi]]) {
   check(`no capture attribute ${label}`, /capture=/.test(html), false);
   check(`file inputs accept images ${label}`, (html.match(/type="file" accept="image\/\*"/g) || []).length, 4);
 }
-
-// Copy should not promise recognition the deployment cannot perform.
-check("no scanner promise without a key", /suggests the card details/.test(withoutAi), false);
-check("scanner promise present with a key", /suggests the card details/.test(withAi), true);
-check("offers photos you already took", /photos you already took/.test(withoutAi), true);
 
 // The manual path must survive the AI button not being rendered.
 for (const [label, html] of [["without AI", withoutAi], ["with AI", withAi]]) {

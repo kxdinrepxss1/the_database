@@ -191,7 +191,9 @@ const server = createServer(async (req, res) => {
     res.end(payload === null ? "" : JSON.stringify(payload));
     return;
   }
-  const response = await worker.fetch(new Request("http://127.0.0.1" + req.url), env);
+  // The port matters: the worker builds redirect targets from request.url, so
+  // dropping it sent /scan and /pricing to port 80 instead of back here.
+  const response = await worker.fetch(new Request("http://" + (req.headers.host || "127.0.0.1") + req.url), env);
   res.writeHead(response.status, Object.fromEntries(response.headers));
   res.end(Buffer.from(await response.arrayBuffer()));
 });
@@ -227,7 +229,7 @@ async function open(route) {
 }
 
 // Every route must load clean.
-for (const route of ["/", "/collection", "/scan", "/account", "/reset-password"]) {
+for (const route of ["/", "/collection", "/account", "/reset-password"]) {
   const { context, page, errors } = await open(route);
   check(`${route} loads without errors`, errors, []);
   await context.close();
@@ -1459,6 +1461,73 @@ const PUBLIC_ROWS = [
   check("and selecting turns pricing back off", await page.locator(".tile-price").count(), 0);
 
   check("no errors across the bulk flow", errors, []);
+  await context.close();
+}
+
+// --- The Add page folded into the collection ------------------------------------
+// Two doors into one card form, one of them a whole tab in the navigation.
+// Adding a card belongs on the page the cards are on.
+{
+  const { context, page, errors } = await open("/collection");
+
+  const scan = await page.goto(origin + "/scan");
+  check("the old Add route lands on the collection",
+    new URL(page.url()).pathname, "/collection");
+  check("and it is a redirect, not a 404", scan.status() < 400, true);
+  await page.waitForTimeout(500);
+
+  check("the mobile nav is down to four", await page.locator(".mobile-nav a").count(), 4);
+  check("no Add tab is left", await page.locator('.mobile-nav a[href="/scan"]').count(), 0);
+  check("the header nav is down to four too", await page.locator("header nav a").count(), 4);
+
+  // Without a key there is nothing to choose between, so the button goes
+  // straight to the form rather than asking a question with one real answer.
+  await page.click("#addCard");
+  await page.waitForSelector("#manualForm");
+  check("adding a card opens the form directly",
+    await page.locator('#manualForm [name="player"]').count(), 1);
+  check("and never promises a scanner this deployment has not got",
+    (await page.locator(".modal-copy").textContent()).includes("Scan"), false);
+
+  // The photo-first capture was the one thing the Add page had that the form
+  // does not, so it has to survive the page going away.
+  check("the form offers the camera", await page.locator("#photoFirst").isVisible(), true);
+  await page.click("#photoFirst");
+  await page.waitForSelector("#chooseFront");
+  check("which opens the photo capture", await page.locator("#scanFront").count(), 1);
+  check("and will not continue without a photo",
+    await page.locator("#manualScan").isDisabled(), true);
+
+  // A 1x1 PNG is enough: the point is that a chosen photo carries into the form.
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64");
+  await page.setInputFiles("#scanFront", { name: "front.png", mimeType: "image/png", buffer: png });
+  await page.waitForFunction(() => !document.querySelector("#manualScan").disabled);
+  await page.click("#manualScan");
+  await page.waitForSelector("#manualForm");
+  check("continuing lands in the card form", await page.locator("#manualForm").count(), 1);
+  check("with the photo already attached",
+    await page.locator("#frontPreview.show").count(), 1);
+
+  await page.fill('[name="player"]', "Camera Path");
+  await page.fill('[name="year"]', "2024");
+  await page.fill('[name="set"]', "Topps");
+  await page.click(".submit-card");
+  await page.waitForTimeout(600);
+  check("and the card saves", await page.locator(".catalog-card").count(), 1);
+  check("with its photo", await page.evaluate(() =>
+    !!JSON.parse(localStorage.getItem("the-database-cards"))[0].photo), true);
+
+  // Editing an existing card must not offer to start over from photos.
+  await page.locator(".catalog-card").first().click();
+  await page.waitForTimeout(250);
+  await page.click(".edit-card");
+  await page.waitForSelector("#manualForm");
+  check("editing does not offer the camera", await page.locator("#photoFirst").count(), 0);
+  await page.click(".close");
+
+  check("no errors through the folded add flow", errors, []);
   await context.close();
 }
 

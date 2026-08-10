@@ -73,6 +73,26 @@ it after pulling changes — the card scanner refuses to run until the
 skipped until `error_events` does, and the growth chart stays device-local
 until `collection_snapshots` does.
 
+## Adding a card
+
+There is one way in: **Add card** on the collection page. There used to be two —
+that button, and a whole Add tab in the navigation — which were two doors into
+the same card form.
+
+The form takes photos itself, and offers **Use the camera instead** for the
+phone-shaped path: two large targets for front and back, a preview, and then
+the same form with the photos already attached. That capture flow is what the
+Add tab was for, and it survived the tab.
+
+With `OPENAI_API_KEY` set, **Add card** asks first — scan the card, or enter the
+details — because scanning is then worth putting in front of the form. Without
+the key it goes straight to the form, since a choice with one real answer is
+just a click.
+
+`/scan` redirects to `/collection` rather than 404ing, for bookmarks, cached
+service-worker entries, and anyone who installed the app when that page had its
+own icon.
+
 ## Where cards live
 
 A card records a **container** (Binder 2, Monster Box A), a **section** (Page 4,
@@ -255,11 +275,13 @@ publishable key is designed for browser clients, and row-level security is what
 actually protects each collection. `OPENAI_API_KEY` is a real secret and must
 never go in `wrangler.toml`.
 
-Without `OPENAI_API_KEY` the app still works, and the Scan page reshapes itself
-into a plain photo-capture flow: photograph the front and back, or choose
-photos already on the device, then fill in the details by hand. Nothing in the
-interface promises recognition the deployment cannot perform. Add the key later
-and the page turns back into the AI scanner on its own — no code change needed.
+Without `OPENAI_API_KEY` the app still works. **Add card** opens the card form,
+which takes photos itself and offers a camera-first capture flow — photograph
+the front and back, or choose photos already on the device, then fill in the
+details by hand. Nothing in the interface promises recognition the deployment
+cannot perform. Add the key later and **Add card** starts asking whether to
+scan the card or type it in, with the scanner behind the first choice — no code
+change needed.
 
 ## Run locally
 
