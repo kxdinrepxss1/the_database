@@ -151,5 +151,18 @@ for (const ref of home.match(/href="(\/[\w.-]+\.(?:png|ico))"/g) || []) {
     (await worker.fetch(new Request("https://x" + path), env)).status, 200);
 }
 
+// The password-reset form shared the account-page class with the real account
+// page, and the router shows every .account-page on /account -- so it had been
+// sitting at the bottom of every signed-in account page.
+const accountHtml = await (await worker.fetch(new Request("https://x/account"), env)).text();
+check("the reset form is not on the account page",
+  /id="resetForm"[\s\S]{0,200}/.test(accountHtml) && accountHtml.includes("reset-page centred-page"), true);
+check("the account section no longer claims the reset page's class",
+  (accountHtml.match(/class="account-page/g) || []).length, 1);
+check("the account page is built from collapsible sections",
+  (accountHtml.match(/class="account-section"/g) || []).length, 4);
+check("every section is closed by default",
+  /<details class="account-section" open/.test(accountHtml), false);
+
 console.log(failed ? "\nFAILED" : "\nAll checks passed");
 process.exit(failed ? 1 : 0);

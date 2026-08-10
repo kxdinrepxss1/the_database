@@ -372,6 +372,15 @@ const addCard = async (page, player, sport) => {
   await page.click(".submit-card");
   await page.waitForTimeout(500);
 };
+// Account settings live in collapsed sections now, so a test has to open one
+// the way a person would. Idempotent: opening an already-open section is a
+// no-op rather than a toggle that closes it.
+const openSection = (page, name) => page.evaluate((wanted) => {
+  const summary = [...document.querySelectorAll(".account-section > summary")]
+    .find((s) => s.textContent.toLowerCase().includes(wanted.toLowerCase()));
+  if (summary && !summary.parentElement.open) summary.click();
+}, name);
+
 const queued = (page) => page.evaluate(() =>
   JSON.parse(localStorage.getItem("the-database-outbox") || "[]").length);
 
@@ -772,6 +781,13 @@ const queued = (page) => page.evaluate(() =>
   await page.waitForTimeout(800);
 
   // Nothing is shared until it is asked for.
+  // The account page is five collapsed sections rather than seven screens of
+  // scrolling, so settings have to be opened before they can be reached.
+  check("settings start collapsed", await page.locator("#sharePublic").isVisible(), false);
+  check("and the page fits in a couple of screens",
+    await page.evaluate(() => document.querySelector("#signedIn").scrollHeight) < 1400, true);
+  await openSection(page, "Public showcase");
+  check("opening a section reveals it", await page.locator("#sharePublic").isVisible(), true);
   check("sharing starts off", await page.locator("#sharePublic").isChecked(), false);
   check("values start hidden", await page.locator("#shareValues").isChecked(), false);
   check("no public link before opting in",
@@ -1139,6 +1155,7 @@ const PUBLIC_ROWS = [
   await page.goto(`${origin}/account`);
   await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
 
+  await openSection(page, "Wantlist");
   check("the wantlist starts empty",
     await page.locator("#wantEmpty:not(.hidden)").count(), 1);
   check("and says the list is never published",
@@ -1169,6 +1186,8 @@ const PUBLIC_ROWS = [
 
   // Removing an entry has to remove its matches too.
   await page.goto(`${origin}/account`);
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+  await openSection(page, "Wantlist");
   await page.waitForSelector(".want-row button");
   await page.click(".want-row button");
   await page.waitForFunction(() => document.querySelectorAll(".want-row").length === 0);
@@ -1204,6 +1223,7 @@ const PUBLIC_ROWS = [
   await page.reload();
   await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
 
+  await openSection(page, "Your cards");
   // Columns deliberately out of order, oddly named, with an extra one.
   const csv = [
     "Nickname,Card #,Player Name,Qty,Yr,Card Set,Paid",
@@ -1513,6 +1533,7 @@ const PUBLIC_ROWS = [
   await page.reload();
   await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
 
+  await openSection(page, "Leaving");
   check("the confirmation is not shown until asked",
     await page.locator("#deleteConfirm").isVisible(), false);
   await page.locator("#deleteAccount").click();
@@ -1584,6 +1605,7 @@ const PUBLIC_ROWS = [
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(`${origin}/account`);
   await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+  await openSection(page, "Leaving");
   await page.locator("#deleteAccount").click();
   await page.locator("#deleteWord").fill("DELETE");
   await page.locator("#deleteForReal").click();
