@@ -96,6 +96,19 @@ just a click.
 service-worker entries, and anyone who installed the app when that page had its
 own icon.
 
+### The first screen
+
+An empty collection is given no search box, no filters, no Select and no Set
+prices — five controls that can do nothing, which on a phone pushed "your
+collection is empty" off the bottom of the screen, and then pushed the first
+card off it too. They come back as soon as there is more than one card to sift
+through, which is the point at which they can do something.
+
+Signing in or signing up loads the profile, wantlist and follows, not just the
+cards. It used to load only the cards, so everything else appeared on the next
+page load — including the new-account prompt, which was therefore missing at the
+one moment it exists for.
+
 ## Where cards live
 
 A card records a **container** (Binder 2, Monster Box A), a **section** (Page 4,

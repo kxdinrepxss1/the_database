@@ -26,6 +26,9 @@ const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
   if (url.pathname.startsWith("/auth/v1/user")) return [200, USER];
+  // Supabase returns a session directly when email confirmation is off, which
+  // is the case the app treats as "signed up and straight in".
+  if (url.pathname.startsWith("/auth/v1/signup")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
   if (url.pathname.startsWith("/auth/v1/token")) return [200, { access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + 3600, user: USER }];
   if (url.pathname === "/rest/v1/collector_interests") {
     if (req.method === "GET") {
@@ -1601,6 +1604,40 @@ const PUBLIC_ROWS = [
   await context.close();
 }
 
+// --- Signing in has to load everything, not just the cards -----------------------
+// Sign-in loaded the collection and stopped, so the profile, the wantlist, the
+// follows and the new-account prompt only turned up on the next page load. The
+// one moment the prompt is for -- just after signing up -- was the one moment
+// it was missing.
+{
+  backend.cards = []; backend.profiles = []; backend.interests = []; backend.follows = [];
+  backend.failWrites = false; backend.snapshots = []; backend.noSnapshotTable = false;
+
+  const context = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e.message)));
+  await page.goto(origin + "/account");
+  await page.waitForTimeout(400);
+
+  await page.click("#authSwitch");
+  await page.fill('[name="displayName"]', "New Tester");
+  await page.fill('[name="email"]', "new@tester.com");
+  await page.fill('[name="password"]', "hunter2hunter");
+  await page.click('#authForm button[type="submit"]');
+  await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
+  await page.waitForTimeout(900);
+
+  check("signing up shows the new-account prompt straight away",
+    await page.locator("#feedSetup").isVisible(), true);
+  check("without needing a reload to find it",
+    await page.evaluate(() => performance.getEntriesByType("navigation").length), 1);
+  check("and the follows were loaded too",
+    backend.followQueries.some((q) => q.includes("follower_id=eq.")), true);
+  check("no errors signing up", errors, []);
+  await context.close();
+}
+
 // --- Telling a collector why their feed is empty ---------------------------------
 // Cards are private by default and imports force it, which is right. It also
 // means somebody can add three hundred cards, follow people, and get an empty
@@ -2005,6 +2042,14 @@ const PUBLIC_ROWS = [
   check("Clear filters is not offered when nothing is filtered",
     await page.locator("#clear").isVisible(), false);
   check("a way to start is", await page.locator("#emptyAdd").isVisible(), true);
+  // Four filters and a search box over nothing are four controls that do
+  // nothing, and on a phone they push the only sentence worth reading off the
+  // bottom of the screen.
+  check("an empty collection is not given a search box",
+    await page.locator(".collection-page .search").isVisible(), false);
+  check("nor filters", await page.locator(".collection-page .filters").isVisible(), false);
+  check("nor anything to select", await page.locator("#selectMode").isVisible(), false);
+  check("nor prices to set", await page.locator("#priceMode").isVisible(), false);
   // The button has to work, not just be there.
   await page.click("#emptyAdd");
   check("and it opens the card form", await page.locator("#manualForm").count(), 1);
@@ -2022,6 +2067,16 @@ const PUBLIC_ROWS = [
   await page.goto(`${origin}/collection`);
   await addCard(page, "Aaron Judge");
   check("the empty state goes away", await page.locator("#empty").isVisible(), false);
+  check("one card still cannot be sifted, so no search box yet",
+    await page.locator(".collection-page .search").isVisible(), false);
+  check("but selecting and pricing are worth offering",
+    await page.locator("#selectMode").isVisible(), true);
+
+  // Two is where a search box starts to earn its place.
+  await addCard(page, "Juan Soto");
+  check("a second card brings the search box back",
+    await page.locator(".collection-page .search").isVisible(), true);
+  check("and the filters", await page.locator(".collection-page .filters").isVisible(), true);
   await page.fill("#search", "nobody named this");
   await page.waitForTimeout(300);
   check("a search that matches nothing says that instead",
