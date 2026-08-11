@@ -231,6 +231,19 @@ however long it runs. Grouping happens when the feed is read, in the browser.
 There is no posts table, nothing is written when a post forms, and changing the
 window is a one-line change rather than a migration.
 
+**A feed you have to furnish first is a feed nobody furnishes.** Following
+nobody used to mean an empty page with instructions on it, which is the worst
+thing to show somebody on the day they sign up — the Feed tab is the second one
+in the navigation, so it is often the first thing a new collector opens. With
+nothing of their own to show, the feed falls back to what collectors in the
+directory have added lately, under a heading saying exactly that.
+
+Only the **listing** switch opens this, not the sharing switch. Somebody who
+shared a collection to send a friend a link has not agreed to be put in front of
+strangers; that is the same permission the Search directory runs on, and the
+feed does not widen it. Every post it shows carries a Follow button, because
+discovery that does not convert is just a slideshow.
+
 **Following is private in both directions.** The policy on `collector_follows`
 returns a row only to the two people named in it: the follower, and the person
 followed. Nobody else can read who follows whom, and that includes counts — a

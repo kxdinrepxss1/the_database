@@ -165,6 +165,11 @@ async function supabase(req, url, body) {
         let rows = url.search.includes("is_listed=eq.true")
           ? backend.publicProfiles.filter((p) => p.is_listed !== false)
           : backend.publicProfiles;
+        const handleIn = (url.search.match(/handle=in\.\(([^)]*)\)/) || [])[1];
+        if (handleIn) {
+          const wanted = decodeURIComponent(handleIn).replace(/"/g, "").split(",");
+          rows = rows.filter((p) => wanted.includes(p.handle));
+        }
         const or = (url.search.match(/or=\(([^)]*)\)/) || [])[1] || "";
         if (or) {
           const term = decodeURIComponent((or.match(/handle\.ilike\.([^,]*)/) || [])[1] || "")
@@ -1764,16 +1769,63 @@ const PUBLIC_ROWS = [
     return { context, page, errors };
   };
 
-  // Following nobody and listing nothing is not the same as having a feed that
-  // came back empty, and only one of them is the collector's to fix.
+  // A feed you have to furnish before it shows anything is a feed nobody
+  // furnishes, so following nobody falls back to the directory.
   {
     const { context, page, errors } = await signedIn("/feed");
-    check("an unconfigured feed says how to start",
-      await page.locator("#feedEmpty").isVisible(), true);
-    check("and does not claim your follows are quiet",
+    await page.waitForSelector(".post");
+    check("following nobody still shows a feed",
+      await page.locator("#feedDiscover").isVisible(), true);
+    check("and says where it came from",
+      (await page.locator("#feedDiscoverNote").textContent()).includes("not following anybody"), true);
+    check("with cards in it", (await page.locator(".post").count()) > 0, true);
+    check("it does not claim the feed is empty",
+      await page.locator("#feedEmpty").isVisible(), false);
+    check("nor that your follows are quiet",
       await page.locator("#feedQuiet").isVisible(), false);
+
+    // Discovery is only worth anything if it converts, so every post it shows
+    // offers the follow it is asking for.
+    check("each post offers a follow", (await page.locator(".post-follow").count()) > 0, true);
+    await page.locator(".post-follow").first().click();
+    // Photo signing re-renders the stream underneath, so waiting on the label
+    // rather than on a stopwatch keeps this from racing the repaint.
+    await page.waitForFunction(() =>
+      document.querySelector(".post-follow").textContent.trim() === "Following");
+    check("which is recorded", backend.follows.length, 1);
+    check("against the signed-in collector", backend.follows[0].follower_id, USER.id);
+    check("and the button says so",
+      (await page.locator(".post-follow").first().textContent()).trim(), "Following");
+    backend.follows = [];
+    check("no errors on the cold-start feed", errors, []);
+    await context.close();
+  }
+
+  // Only the directory switch opens this. An unlisted collector is not put in
+  // front of strangers by the feed any more than by the Search page.
+  {
+    const listed = backend.publicProfiles;
+    backend.publicProfiles = listed.map((p) => ({ ...p, is_listed: false }));
+    const { context, page, errors } = await signedIn("/feed");
+    check("an unlisted collector is not surfaced",
+      await page.locator(".post").count(), 0);
+    check("and the feed says how to start instead",
+      await page.locator("#feedEmpty").isVisible(), true);
+    check("no errors with nothing listed", errors, []);
+    await context.close();
+    backend.publicProfiles = listed;
+  }
+
+  // Nobody sharing at all is the one case with genuinely nothing to say.
+  {
+    const cards = backend.publicCards;
+    backend.publicCards = [];
+    const { context, page, errors } = await signedIn("/feed");
+    check("an empty world says how to start",
+      await page.locator("#feedEmpty").isVisible(), true);
     check("no errors on the empty feed", errors, []);
     await context.close();
+    backend.publicCards = cards;
   }
 
   // Follow from the collector's own page, which is where you find them.
