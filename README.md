@@ -18,6 +18,9 @@ The Database is a mobile-friendly sports-card collection app. It supports:
 - private following: nobody is told you follow them, and only you see your followers
 - a private wantlist, matched against shared collections without ever being published
 - a private watchlist of players and teams, matched the same way
+- likes, with a public count and a list only the card's owner can see
+- public comments, removable by either the author or the card's owner
+- notifications, derived from what already happened rather than stored
 - install-to-home-screen support
 
 ## Project structure
@@ -267,6 +270,42 @@ your own account page and nowhere else.
 `public_cards` carries a handle and no user id, on purpose. Turning followed ids
 into handles costs the feed one extra request and keeps the view that narrow. It
 also means a collector who changes their handle stays followed.
+
+## Likes, comments and notifications
+
+These are the first parts of the app that tell another collector you exist.
+Following does not — nobody is told they have been followed. A like tells the
+card's owner; a comment tells everybody. The difference between them is
+deliberate:
+
+- **A like's count is public. Its list of names is the card owner's alone.**
+  Anybody looking at a shared card sees "3", and only the collector who owns
+  that card can see who. The count comes from a view that groups the rows away,
+  so there is no query that turns the number back into names, and `setup.sql`
+  asserts that view carries no `user_id`.
+- **A comment is public speech.** Anybody who can see the card sees the comment
+  and the handle that signed it. Commenting requires a handle for that reason —
+  an unsigned comment on somebody's collection is worth less than none.
+
+Neither can attach to a card that is not shared, and unsharing a card takes its
+likes and comments out of view with it. Either end can delete a comment: the
+person who wrote it, and the collector whose card it sits on, so somebody who
+gets a nasty comment does not have to wait for anybody. There is deliberately no
+edit — a comment that can be rewritten after a reply is one nobody can rely on.
+
+**Notifications are not stored.** A notification is a like, a comment or a
+follow that already exists, read back by the person it concerns. Nothing is
+written when somebody likes a card and nothing needs cleaning up when they
+unlike it, so there is no second copy to drift. The only thing kept is how far
+the collector has read: one timestamp on their own profile.
+
+## Followers
+
+The count was all its owner could see; now they can see the list. It is still
+readable only by the person being followed — that is the row-level-security
+policy, not a decision the page makes — and a follower who has not made their
+own profile public appears as "a private collector" rather than being left out,
+so the list and the count agree.
 
 ## Wantlists
 

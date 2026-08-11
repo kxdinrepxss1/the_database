@@ -21,7 +21,7 @@ const env = { SUPABASE_URL: "", SUPABASE_PUBLISHABLE_KEY: "test-key" };
 
 // Minimal stand-in for the Supabase endpoints the client uses, plus a switch
 // for making writes fail so the outbox can be observed holding on to them.
-const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, interests: [], follows: [], followQueries: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
+const backend = { cards: [], snapshots: [], profiles: [], takenHandles: [], patches: [], publicCards: [], publicQueries: [], publicProfiles: [], collectorQueries: [], cardQueries: [], accountDeletes: 0, photoDeletes: [], failDelete: false, reports: [], failReport: false, interests: [], follows: [], followQueries: [], likes: [], likeQueries: [], comments: [], failWrites: false, noSnapshotTable: false, writeAttempts: 0, signCalls: 0 };
 const USER = { id: "11111111-1111-4111-8111-111111111111", email: "a@b.c" };
 
 async function supabase(req, url, body) {
@@ -45,6 +45,60 @@ async function supabase(req, url, body) {
       backend.interests = backend.interests.filter((w) => w.id !== id);
       return [204, null];
     }
+  }
+  if (url.pathname === "/rest/v1/card_likes") {
+    const one = (re) => decodeURIComponent((url.search.match(re) || [])[1] || "");
+    if (req.method === "GET") {
+      backend.likeQueries.push(url.search);
+      const owner = one(/user_id=eq\.([^&]+)/);
+      // The real policy returns only rows the reader is part of: their own
+      // likes, and likes on their own cards. A mock that returned everything
+      // would make the "names are not public" checks meaningless.
+      const reader = USER.id;
+      let rows = backend.likes.filter((l) =>
+        l.user_id === reader || (backend.cards.find((c) => c.id === l.card_id) || {}).user_id === reader);
+      if (owner) rows = rows.filter((l) => l.user_id === owner);
+      return [200, rows];
+    }
+    if (req.method === "POST") {
+      const row = JSON.parse(body);
+      backend.likes = backend.likes
+        .filter((l) => !(l.card_id === row.card_id && l.user_id === row.user_id))
+        .concat({ ...row, created_at: new Date().toISOString() });
+      return [201, null];
+    }
+    if (req.method === "DELETE") {
+      const card = one(/card_id=eq\.([^&]+)/), user = one(/user_id=eq\.([^&]+)/);
+      backend.likes = backend.likes.filter((l) => !(l.card_id === card && l.user_id === user));
+      return [204, null];
+    }
+  }
+  if (url.pathname === "/rest/v1/card_like_counts") {
+    // The public half: a number per card, and no way back to a name.
+    const counts = {};
+    backend.likes.forEach((l) => { counts[l.card_id] = (counts[l.card_id] || 0) + 1; });
+    return [200, Object.keys(counts).map((card_id) => ({ card_id, likes: counts[card_id] }))];
+  }
+  if (url.pathname === "/rest/v1/card_comments") {
+    if (req.method === "GET") return [200, backend.comments];
+    if (req.method === "POST") {
+      const row = JSON.parse(body);
+      backend.comments.push({ ...row, id: "cm" + backend.comments.length, created_at: new Date().toISOString() });
+      return [201, null];
+    }
+    if (req.method === "DELETE") {
+      const id = decodeURIComponent((url.search.match(/id=eq\.([^&]+)/) || [])[1] || "");
+      backend.comments = backend.comments.filter((c) => c.id !== id);
+      return [204, null];
+    }
+  }
+  if (url.pathname === "/rest/v1/card_comment_feed") {
+    const card = decodeURIComponent((url.search.match(/card_id=eq\.([^&]+)/) || [])[1] || "");
+    return [200, backend.comments.filter((c) => !card || c.card_id === card).map((c) => {
+      const p = backend.publicProfiles.find((x) => x.user_id === c.user_id) || {};
+      return { id: c.id, card_id: c.card_id, body: c.body, created_at: c.created_at,
+        handle: p.handle || null, display_name: p.display_name || null };
+    })];
   }
   if (url.pathname === "/rest/v1/collector_follows") {
     const one = (re) => decodeURIComponent((url.search.match(re) || [])[1] || "");
@@ -1258,6 +1312,27 @@ const PUBLIC_ROWS = [
   check("and asks for it in one request, not one per entry",
     backend.publicQueries.filter((q) => q.includes("or=(and(")).length, 1);
 
+  // Your own shared cards match your own wantlist, so this page was offering
+  // the collector three cards they already owned, from themselves. Needs a
+  // handle to exclude, so the profile comes first.
+  backend.publicQueries = [];
+  backend.publicCards = PUBLIC_ROWS.concat([{
+    id: "own-1111-4111-8111-111111111111", handle: "mine", display_name: "Me",
+    player: "Aaron Judge", year: 2024, card_set: "Topps", parallel: "Base",
+    grade: "Raw", quantity: 1, created_at: new Date().toISOString(),
+  }]);
+  backend.profiles = [{ user_id: USER.id, handle: "mine", display_name: "Me",
+    is_public: true, is_listed: true, show_values: false }];
+  await page.goto(`${origin}/search`);
+  await page.waitForFunction(() => document.querySelectorAll("#wantGrid .catalog-card").length > 0);
+  await page.waitForTimeout(400);
+  check("the search asks the server to leave your cards out",
+    backend.publicQueries.some((q) => q.includes("handle=neq.")), true);
+  check("and none of the matches are yours", await page.evaluate(() =>
+    [...document.querySelectorAll("#wantGrid .meta span")]
+      .some((s) => s.textContent.toLowerCase() === "@mine")), false);
+  backend.publicCards = PUBLIC_ROWS; backend.profiles = [];
+
   // Removing an entry has to remove its matches too.
   await page.goto(`${origin}/account`);
   await page.waitForFunction(() => !document.querySelector("#signedIn").classList.contains("hidden"));
@@ -1957,6 +2032,8 @@ const PUBLIC_ROWS = [
     // carried no hint of who was searching.
     const searches = backend.publicQueries.filter((q) => q.includes("or=("));
     check("interests leave as a search, not a list", searches.length > 0, true);
+    check("the feed still shows your own cards going past",
+      searches.every((q) => !q.includes("handle=neq.")), true);
     check("and the search says nothing about who is asking",
       searches.every((q) => !q.includes(USER.id)), true);
     check("nothing about the wantlist is written down",
@@ -2019,6 +2096,167 @@ const PUBLIC_ROWS = [
   }
 
   backend.publicCards = []; backend.publicProfiles = []; backend.follows = []; backend.interests = [];
+}
+
+// --- Likes, comments, followers and notifications ---------------------------------
+// The first features that tell another collector you exist. A like's count is
+// public and its names are the card owner's alone; a comment carries its
+// author's handle to anybody who can see the card. Both were chosen that way.
+{
+  const OTHER = "99999999-9999-4999-8999-999999999999";
+  const t = (m) => new Date(Date.now() - m * 60000).toISOString();
+  backend.publicProfiles = [
+    { user_id: OTHER, handle: "boxbreaker", display_name: "Box Breaker", is_public: true, is_listed: true },
+    { user_id: USER.id, handle: "mine", display_name: "Me", is_public: true, is_listed: true },
+  ];
+  backend.publicCards = [{ id: "L1", handle: "boxbreaker", display_name: "Box Breaker",
+    player: "Aaron Judge", year: 2024, sport: "Baseball", card_set: "Topps", card_number: "#1",
+    team: "New York Yankees", parallel: "Base", grade: "Raw", quantity: 1, created_at: t(5) }];
+  backend.follows = [{ follower_id: USER.id, followed_id: OTHER, created_at: t(900) }];
+  backend.likes = []; backend.comments = []; backend.interests = [];
+  backend.cards = []; backend.profiles = [{ user_id: USER.id, handle: "mine",
+    display_name: "Me", is_public: true, is_listed: true, show_values: false }];
+  backend.failWrites = false; backend.snapshots = []; backend.noSnapshotTable = false;
+
+  const signedIn = async (route) => {
+    const context = await browser.newContext({ viewport: { width: 1100, height: 1400 } });
+    await context.addInitScript((user) => {
+      localStorage.setItem("the-database-session", JSON.stringify({
+        access_token: "t", refresh_token: "r",
+        expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+      }));
+    }, USER);
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(String(e.message)));
+    await page.goto(origin + route);
+    await page.waitForTimeout(1000);
+    return { context, page, errors };
+  };
+
+  // Liking, from the feed.
+  {
+    const { context, page, errors } = await signedIn("/feed");
+    await page.waitForSelector(".post-act[data-like]");
+    check("a post can be liked", await page.locator("[data-like]").count(), 1);
+    check("and starts unliked",
+      await page.locator("[data-like].liked").count(), 0);
+    await page.click("[data-like]");
+    await page.waitForFunction(() => document.querySelector("[data-like]").classList.contains("liked"));
+    check("the like reaches the backend", backend.likes.length, 1);
+    check("under the signed-in collector", backend.likes[0].user_id, USER.id);
+    check("and against the card", backend.likes[0].card_id, "L1");
+    check("the count appears",
+      (await page.locator("[data-likecount]").textContent()).trim(), "1");
+    await page.click("[data-like]");
+    await page.waitForFunction(() => !document.querySelector("[data-like]").classList.contains("liked"));
+    check("clicking again unlikes", backend.likes.length, 0);
+    check("no errors liking", errors, []);
+    await context.close();
+  }
+
+  // Commenting.
+  {
+    const { context, page, errors } = await signedIn("/feed");
+    await page.waitForSelector("[data-comments]");
+    await page.click("[data-comments]");
+    await page.waitForSelector("#commentForm");
+    check("the thread says comments are public",
+      (await page.locator(".modal-sub").textContent()).includes("public"), true);
+    await page.fill("#commentBody", "Great card");
+    await page.click("#commentForm button[type=submit]");
+    await page.waitForSelector(".comment");
+    check("the comment is stored", backend.comments.length, 1);
+    check("with its author", backend.comments[0].user_id, USER.id);
+    check("and is shown with a handle, not anonymously",
+      (await page.locator(".comment b").textContent()).trim(), "Me");
+    // Either end can delete: here the commenter.
+    await page.click(".comment button");
+    await page.waitForFunction(() => document.querySelectorAll(".comment").length === 0);
+    check("the commenter can remove their own", backend.comments.length, 0);
+    check("no errors commenting", errors, []);
+    await context.close();
+  }
+
+  // Notifications: derived from what already exists, not written when it happens.
+  {
+    backend.cards = [{ id: "MINE1", user_id: USER.id, player: "Derek Jeter",
+      year: 2024, card_set: "Topps", parallel: "Base", grade: "Raw", quantity: 1,
+      visibility: "public" }];
+    backend.likes = [{ card_id: "MINE1", user_id: OTHER, created_at: t(4) }];
+    backend.comments = [{ id: "c1", card_id: "MINE1", user_id: OTHER,
+      body: "What a card", created_at: t(3) }];
+    backend.follows = [{ follower_id: OTHER, followed_id: USER.id, created_at: t(2) }];
+
+    const { context, page, errors } = await signedIn("/notices");
+    await page.waitForSelector(".notice");
+    const lines = await page.evaluate(() =>
+      [...document.querySelectorAll(".notice")].map((n) => n.textContent));
+    check("a like on your card is a notification",
+      lines.some((l) => /liked your Derek Jeter/.test(l)), true);
+    check("so is a comment, with what was said",
+      lines.some((l) => /commented on your Derek Jeter/.test(l) && /What a card/.test(l)), true);
+    check("and so is a new follower",
+      lines.some((l) => /followed you/.test(l)), true);
+    check("they are named where the person has a public profile",
+      lines.every((l) => l.includes("Box Breaker")), true);
+    check("nothing was written to produce them",
+      backend.likes.length + backend.comments.length + backend.follows.length, 3);
+    check("no errors on notifications", errors, []);
+    await context.close();
+  }
+
+  // The badge, and the fact that reading clears it.
+  {
+    backend.profiles = [{ user_id: USER.id, handle: "mine", display_name: "Me",
+      is_public: true, is_listed: true, show_values: false }];
+    const { context, page, errors } = await signedIn("/collection");
+    await page.waitForFunction(() => {
+      const d = document.querySelector("#noticeDot");
+      return d && !d.classList.contains("hidden");
+    });
+    check("the bell counts what is unread",
+      (await page.locator("#noticeDot").textContent()).trim(), "3");
+    await page.goto(origin + "/notices");
+    await page.waitForSelector(".notice");
+    await page.waitForTimeout(700);
+    check("reading them records how far you got",
+      !!(backend.profiles[0] || {}).notifications_seen_at
+        || backend.profiles.some((p) => p.notifications_seen_at), true);
+    check("no errors on the badge", errors, []);
+    await context.close();
+  }
+
+  // Followers, which only their owner can see. The count was all there was.
+  {
+    backend.follows = [
+      { follower_id: OTHER, followed_id: USER.id, created_at: t(2) },
+      { follower_id: "77777777-7777-4777-8777-777777777777", followed_id: USER.id, created_at: t(9) },
+    ];
+    const { context, page, errors } = await signedIn("/account");
+    await openSection(page, "Your feed");
+    await page.waitForTimeout(900);
+    check("the count is still there",
+      (await page.locator("#followerLine").textContent()).includes("2 collectors follow you"), true);
+    check("and now so are the names",
+      await page.locator("#followerList .want-row").count(), 2);
+    check("a follower with no public page is still listed",
+      (await page.locator("#followerList").textContent()).includes("A private collector"), true);
+    check("with a way to follow them back",
+      await page.locator("#followerList [data-followback]").count(), 1);
+    await page.click("#followerList [data-followback]");
+    await page.waitForTimeout(700);
+    check("which works",
+      backend.follows.some((f) => f.follower_id === USER.id && f.followed_id === OTHER), true);
+    check("every followers read is scoped to the reader",
+      backend.followQueries.filter((q) => q.includes("followed_id=eq."))
+        .every((q) => q.includes(encodeURIComponent(USER.id))), true);
+    check("no errors on followers", errors, []);
+    await context.close();
+  }
+
+  backend.likes = []; backend.comments = []; backend.follows = [];
+  backend.publicCards = []; backend.publicProfiles = []; backend.profiles = []; backend.cards = [];
 }
 
 // --- The first thirty seconds -------------------------------------------------

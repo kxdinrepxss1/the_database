@@ -211,6 +211,11 @@ using (auth.uid() = user_id);
 --   * purchase_price, purchase_date and notes are private business.
 --
 -- current_value appears only when the collector has opted in separately.
+-- Dropped ahead of the view they select from, and recreated further down. A
+-- cascade would do it in one line and would also drop, without saying so,
+-- anything else somebody had built on top of public_cards.
+drop view if exists public.card_like_counts;
+drop view if exists public.card_comment_feed;
 drop view if exists public.public_cards;
 create view public.public_cards
 with (security_invoker = false) as
@@ -477,6 +482,156 @@ do $$ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- Likes and comments.
+--
+-- These are the first features that tell another collector you exist. Following
+-- does not: nobody is told they have been followed. A like tells the card's
+-- owner, and a comment tells everybody. Both were asked for deliberately, and
+-- the difference between them is deliberate too:
+--
+--   * A like's COUNT is public; the LIST of who liked is for the card's owner
+--     alone. That keeps the existing rule -- only the person being followed
+--     sees who follows them -- intact for the closest equivalent.
+--   * A comment is public speech. Its author's handle is visible to anybody who
+--     can see the card, because that is what a comment is.
+--
+-- Neither can attach to a card that is not shared. The check is a function
+-- rather than a policy expression so it runs as its owner: a collector who
+-- cannot read the cards table still needs the answer.
+-- ---------------------------------------------------------------------------
+create or replace function public.is_public_card(card uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.cards c
+    join public.collector_profiles p on p.user_id = c.user_id
+    where c.id = card and c.visibility = 'public' and p.is_public
+  );
+$$;
+
+create or replace function public.owns_card(card uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.cards where id = card and user_id = auth.uid());
+$$;
+
+create table if not exists public.card_likes (
+  card_id uuid not null references public.cards(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (card_id, user_id)
+);
+
+create index if not exists card_likes_card_idx on public.card_likes (card_id);
+create index if not exists card_likes_user_idx on public.card_likes (user_id, created_at desc);
+
+alter table public.card_likes enable row level security;
+
+-- Your own likes, and the likes on your own cards. Nobody else's, which is what
+-- makes the public number a count rather than a list.
+drop policy if exists "Collectors can read likes they are part of" on public.card_likes;
+create policy "Collectors can read likes they are part of"
+on public.card_likes for select
+using (auth.uid() = user_id or public.owns_card(card_id));
+
+drop policy if exists "Collectors can like shared cards" on public.card_likes;
+create policy "Collectors can like shared cards"
+on public.card_likes for insert
+with check (auth.uid() = user_id and public.is_public_card(card_id));
+
+drop policy if exists "Collectors can unlike" on public.card_likes;
+create policy "Collectors can unlike"
+on public.card_likes for delete
+using (auth.uid() = user_id);
+
+-- The public half: a number, with no way to turn it back into names, and only
+-- for cards that are actually shared.
+drop view if exists public.card_like_counts;
+create view public.card_like_counts
+with (security_invoker = false) as
+select l.card_id, count(*)::int as likes
+from public.card_likes l
+join public.public_cards c on c.id = l.card_id
+group by l.card_id;
+
+create table if not exists public.card_comments (
+  id uuid primary key default gen_random_uuid(),
+  card_id uuid not null references public.cards(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  body text not null,
+  created_at timestamptz not null default now(),
+  constraint card_comments_body_length
+    check (length(btrim(body)) between 1 and 600)
+);
+
+create index if not exists card_comments_card_idx on public.card_comments (card_id, created_at);
+create index if not exists card_comments_user_idx on public.card_comments (user_id, created_at desc);
+
+alter table public.card_comments enable row level security;
+
+-- Public speech on a public card. Unshare the card and the comments go with it.
+drop policy if exists "Anyone can read comments on shared cards" on public.card_comments;
+create policy "Anyone can read comments on shared cards"
+on public.card_comments for select
+using (public.is_public_card(card_id) or auth.uid() = user_id or public.owns_card(card_id));
+
+drop policy if exists "Collectors can comment on shared cards" on public.card_comments;
+create policy "Collectors can comment on shared cards"
+on public.card_comments for insert
+with check (auth.uid() = user_id and public.is_public_card(card_id));
+
+-- Either end can remove a comment: the person who wrote it, and the collector
+-- whose card it is sitting on. Somebody who gets a nasty comment should not
+-- have to wait for anybody to do something about it.
+drop policy if exists "Comments can be removed by either end" on public.card_comments;
+create policy "Comments can be removed by either end"
+on public.card_comments for delete
+using (auth.uid() = user_id or public.owns_card(card_id));
+
+-- Deliberately no update policy. A comment that can be rewritten after somebody
+-- has replied to it is a comment nobody can rely on.
+
+-- Comments carry their author's handle, because an anonymous comment on
+-- somebody's collection is worth less than no comment. user_id stays out, the
+-- same way it stays out of public_cards.
+drop view if exists public.card_comment_feed;
+create view public.card_comment_feed
+with (security_invoker = false) as
+select cm.id, cm.card_id, cm.body, cm.created_at,
+       p.handle, p.display_name
+from public.card_comments cm
+join public.public_cards c on c.id = cm.card_id
+left join public.collector_profiles p on p.user_id = cm.user_id;
+
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant select, insert, delete on public.card_likes to authenticated';
+    execute 'grant select, insert, delete on public.card_comments to authenticated';
+    execute 'grant select on public.card_like_counts, public.card_comment_feed to authenticated';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    -- Signed-out visitors read a collection; they can see that a card is liked
+    -- and what was said about it, and can do neither themselves.
+    execute 'grant select on public.card_like_counts, public.card_comment_feed to anon';
+  end if;
+end $$;
+
+-- Notifications are not stored. They are the likes, comments and follows that
+-- already exist, read back by the person they concern, so there is no second
+-- copy to keep in step and nothing to clean up when a like is undone. All that
+-- is kept is how far the collector has read.
+alter table public.collector_profiles
+  add column if not exists notifications_seen_at timestamptz;
+
+-- ---------------------------------------------------------------------------
 -- Reports.
 --
 -- The directory lists every collector who opts in, and handles are checked for
@@ -698,7 +853,8 @@ begin
         (p.schemaname = 'public'
          and p.tablename in ('cards','collector_profiles','scan_events',
                              'collection_snapshots','error_events','reports',
-                             'collector_interests','collector_follows'))
+                             'collector_interests','collector_follows',
+                             'card_likes','card_comments'))
         or (p.schemaname = 'storage' and p.tablename = 'objects'
             and coalesce(p.qual, '') || coalesce(p.with_check, '') like '%card-photos%')
       )
@@ -726,6 +882,12 @@ begin
         'Collectors can read their own follows',
         'Collectors can follow',
         'Collectors can unfollow',
+        'Collectors can read likes they are part of',
+        'Collectors can like shared cards',
+        'Collectors can unlike',
+        'Anyone can read comments on shared cards',
+        'Collectors can comment on shared cards',
+        'Comments can be removed by either end',
         'Anyone can read photos of shared cards',
         'Collectors can read their card photos',
         'Collectors can upload their card photos',
@@ -776,6 +938,10 @@ begin
       ('collector_interests','user_id'), ('collector_interests','kind'),
       ('collector_interests','team'),
       ('collector_follows','follower_id'), ('collector_follows','followed_id'),
+      ('collector_profiles','notifications_seen_at'),
+      ('card_likes','card_id'), ('card_likes','user_id'),
+      ('card_comments','card_id'), ('card_comments','body'),
+      ('card_like_counts','likes'), ('card_comment_feed','handle'),
       ('public_cards','handle'), ('public_cards','player'), ('public_cards','current_value'),
       ('public_cards','front_image_path')
     ) as t(relname, colname)
@@ -800,6 +966,26 @@ begin
       problems := problems || format('public_cards must not expose %s', rec.colname);
     end if;
   end loop;
+
+  -- A count is public; the names behind it are not. A user_id on the counts
+  -- view would turn one into the other.
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'card_like_counts' and column_name = 'user_id'
+  ) then
+    problems := problems || 'card_like_counts must not expose user_id';
+  end if;
+
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'card_comment_feed' and column_name = 'user_id'
+  ) then
+    problems := problems || 'card_comment_feed must not expose user_id';
+  end if;
+
+  if not exists (select 1 from pg_proc where proname = 'is_public_card') then
+    problems := problems || 'missing: public.is_public_card()';
+  end if;
 
   if not exists (select 1 from pg_proc where proname = 'is_shared_card_photo') then
     problems := problems || 'missing: public.is_shared_card_photo()';
@@ -829,7 +1015,8 @@ begin
   for rec in
     select unnest(array['cards','collector_profiles','scan_events',
                         'collection_snapshots','error_events','reports',
-                        'collector_interests','collector_follows']) as relname
+                        'collector_interests','collector_follows',
+                        'card_likes','card_comments']) as relname
   loop
     if not exists (
       select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
