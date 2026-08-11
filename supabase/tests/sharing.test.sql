@@ -550,3 +550,188 @@ reset role;
 delete from public.collector_follows
  where follower_id = '88888888-8888-8888-8888-888888888888'
     or followed_id = '88888888-8888-8888-8888-888888888888';
+
+-- ---------------------------------------------------------------------------
+-- Likes and comments.
+--
+-- A like's count is public and its list is not, so the interesting attempt is
+-- turning the number back into names. A comment is public on purpose; the
+-- interesting attempt is putting one somewhere it does not belong.
+-- ---------------------------------------------------------------------------
+-- A collector with no profile row at all. 77 already has a handle from the
+-- listing section above, so it cannot stand in for one.
+insert into auth.users (id, email) values
+  ('66666666-6666-6666-6666-666666666666', 'nohandle@example.com')
+on conflict do nothing;
+delete from public.collector_profiles where user_id = '66666666-6666-6666-6666-666666666666';
+grant select, insert, delete on public.card_likes, public.card_comments to authenticated;
+grant select on public.card_like_counts, public.card_comment_feed to authenticated, anon;
+
+delete from public.card_comments;
+delete from public.card_likes;
+
+-- The commenter has a handle, because a comment carries one.
+insert into public.collector_profiles (user_id, handle, display_name, is_public, is_listed, show_values)
+values ('88888888-8888-8888-8888-888888888888', 'commenter', 'The Commenter', false, false, false)
+on conflict (user_id) do update set handle = excluded.handle;
+
+-- 88 likes and comments on the sharer's shared card.
+set role authenticated;
+set request.jwt.claim.sub = '88888888-8888-8888-8888-888888888888';
+insert into public.card_likes (card_id, user_id)
+values ('aaaaaaaa-0000-4000-8000-000000000001', '88888888-8888-8888-8888-888888888888');
+insert into public.card_comments (card_id, user_id, body)
+values ('aaaaaaaa-0000-4000-8000-000000000001', '88888888-8888-8888-8888-888888888888', 'Nice card');
+
+-- The private card must refuse both, whoever asks.
+do $$
+begin
+  insert into public.card_likes (card_id, user_id)
+  values ('aaaaaaaa-0000-4000-8000-000000000002', '88888888-8888-8888-8888-888888888888');
+  raise notice 'a private card cannot be liked: FAIL';
+exception when others then
+  raise notice 'a private card cannot be liked: PASS';
+end $$;
+
+do $$
+begin
+  insert into public.card_comments (card_id, user_id, body)
+  values ('aaaaaaaa-0000-4000-8000-000000000002', '88888888-8888-8888-8888-888888888888', 'Seen it');
+  raise notice 'a private card cannot be commented on: FAIL';
+exception when others then
+  raise notice 'a private card cannot be commented on: PASS';
+end $$;
+
+do $$
+begin
+  insert into public.card_likes (card_id, user_id)
+  values ('aaaaaaaa-0000-4000-8000-000000000001', '22222222-2222-2222-2222-222222222222');
+  raise notice 'nobody can like in somebody else name: FAIL';
+exception when others then
+  raise notice 'nobody can like in somebody else name: PASS';
+end $$;
+
+-- An empty comment, and one longer than the box allows.
+do $$
+begin
+  insert into public.card_comments (card_id, user_id, body)
+  values ('aaaaaaaa-0000-4000-8000-000000000001', '88888888-8888-8888-8888-888888888888', '   ');
+  raise notice 'an empty comment is rejected: FAIL';
+exception when others then
+  raise notice 'an empty comment is rejected: PASS';
+end $$;
+
+do $$
+begin
+  insert into public.card_comments (card_id, user_id, body)
+  values ('aaaaaaaa-0000-4000-8000-000000000001', '88888888-8888-8888-8888-888888888888', repeat('x', 601));
+  raise notice 'an overlong comment is rejected: FAIL';
+exception when others then
+  raise notice 'an overlong comment is rejected: PASS';
+end $$;
+reset role;
+
+-- The card's owner sees who liked it. That is the whole of the list side.
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+select 'the card owner can see who liked it: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.card_likes;
+reset role;
+
+-- Nobody else can, in any shape.
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+select 'a bystander cannot list who liked a card: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.card_likes;
+
+select 'a bystander cannot name a liker by filtering: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.card_likes
+where user_id = '88888888-8888-8888-8888-888888888888';
+
+-- ...but the number is public, which is what was asked for.
+select 'the count is public: ' ||
+  case when coalesce(max(likes), 0) = 1 then 'PASS' else 'FAIL' end
+from public.card_like_counts
+where card_id = 'aaaaaaaa-0000-4000-8000-000000000001';
+
+select 'and a comment is public, with its author: ' ||
+  case when count(*) = 1 and max(handle) = 'commenter' then 'PASS' else 'FAIL' end
+from public.card_comment_feed
+where card_id = 'aaaaaaaa-0000-4000-8000-000000000001';
+
+-- A commenter with no profile at all must still appear, as somebody rather than
+-- as nothing: an inner join here would drop the comment out of the public feed
+-- while leaving it in the table, so the card's owner would be answering a
+-- comment nobody else could see.
+reset role;
+insert into public.card_comments (card_id, user_id, body)
+values ('aaaaaaaa-0000-4000-8000-000000000001', '66666666-6666-6666-6666-666666666666', 'No handle here');
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+select 'a comment from somebody with no handle is still shown: ' ||
+  case when count(*) = 1 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.card_comment_feed
+where card_id = 'aaaaaaaa-0000-4000-8000-000000000001' and handle is null;
+
+-- Deleting somebody else's comment off somebody else's card is neither end.
+do $$
+declare gone int;
+begin
+  delete from public.card_comments;
+  get diagnostics gone = row_count;
+  if gone = 0 then
+    raise notice 'a bystander cannot delete a comment: PASS';
+  else
+    raise notice 'a bystander cannot delete a comment: FAIL (% rows)', gone;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'a bystander cannot delete a comment: PASS';
+end $$;
+reset role;
+
+set role anon;
+select 'a signed-out visitor sees the count: ' ||
+  case when coalesce(max(likes), 0) = 1 then 'PASS' else 'FAIL' end
+from public.card_like_counts;
+
+do $$
+declare seen int;
+begin
+  set local role anon;
+  select count(*) into seen from public.card_likes;
+  if seen = 0 then
+    raise notice 'but never the list: PASS';
+  else
+    raise notice 'but never the list: FAIL (%)', seen;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'but never the list: PASS';
+end $$;
+reset role;
+
+-- The card's owner can clear a comment off their own card.
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+delete from public.card_comments where card_id = 'aaaaaaaa-0000-4000-8000-000000000001';
+select 'the card owner can remove a comment: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL' end
+from public.card_comments;
+reset role;
+
+-- Unsharing the card takes the count and the comments with it.
+update public.cards set visibility = 'private'
+ where id = 'aaaaaaaa-0000-4000-8000-000000000001';
+set role anon;
+select 'unsharing a card hides its like count: ' ||
+  case when count(*) = 0 then 'PASS' else 'FAIL (' || count(*) || ')' end
+from public.card_like_counts
+where card_id = 'aaaaaaaa-0000-4000-8000-000000000001';
+reset role;
+update public.cards set visibility = 'public'
+ where id = 'aaaaaaaa-0000-4000-8000-000000000001';
+
+delete from public.card_comments;
+delete from public.card_likes;
