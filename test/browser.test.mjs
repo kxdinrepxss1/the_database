@@ -1596,6 +1596,113 @@ const PUBLIC_ROWS = [
   await context.close();
 }
 
+// --- Telling a collector why their feed is empty ---------------------------------
+// Cards are private by default and imports force it, which is right. It also
+// means somebody can add three hundred cards, follow people, and get an empty
+// feed with nothing anywhere saying why.
+{
+  const mine = (n, shared) => Array.from({ length: n }, (_, i) => ({
+    id: "n" + i + "111111-1111-4111-8111-111111111111", user_id: USER.id,
+    player: "Card " + i, year: 2024, card_set: "Topps", parallel: "Base",
+    grade: "Raw", quantity: 1, visibility: shared ? "public" : "private",
+  }));
+  const load = async () => {
+    const context = await browser.newContext({ viewport: { width: 1100, height: 1100 } });
+    await context.addInitScript((user) => {
+      localStorage.setItem("the-database-session", JSON.stringify({
+        access_token: "t", refresh_token: "r",
+        expires_at: Math.floor(Date.now() / 1000) + 3600, user,
+      }));
+    }, USER);
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(String(e.message)));
+    await page.goto(origin + "/collection");
+    await page.waitForTimeout(900);
+    return { context, page, errors };
+  };
+
+  backend.failWrites = false; backend.snapshots = []; backend.noSnapshotTable = false;
+  backend.patches = []; backend.profiles = [];
+
+  // Nothing to say about two cards, and saying it would just be nagging.
+  backend.cards = mine(2, false);
+  {
+    const { context, page } = await load();
+    check("no nudge on a nearly empty collection",
+      await page.locator("#shareNudge").isVisible(), false);
+    await context.close();
+  }
+
+  // Sharing cards while the profile switch is off changes nothing visible, so
+  // that switch has to be what is asked for first.
+  backend.cards = mine(8, false);
+  {
+    const { context, page, errors } = await load();
+    check("a collection with nothing shared is told so",
+      await page.locator("#shareNudge").isVisible(), true);
+    check("and counted", (await page.locator("#nudgeTitle").textContent()), "8 cards, none shared.");
+    check("with the profile switch off, that is what it asks for",
+      (await page.locator("#nudgeAction").textContent()).trim(), "Set up my page");
+    check("and it says why sharing cards first would do nothing",
+      (await page.locator("#nudgeText").textContent()).includes("switched off"), true);
+    check("nothing is shared by showing the notice",
+      backend.cards.filter((c) => c.visibility === "public").length, 0);
+    await page.click("#nudgeAction");
+    await page.waitForTimeout(600);
+    check("it leads to the account page", new URL(page.url()).pathname, "/account");
+    check("no errors with the profile off", errors, []);
+    await context.close();
+  }
+
+  // With the page live, the fix is one click.
+  backend.profiles = [{ user_id: USER.id, handle: "collector", display_name: "A Collector",
+    is_public: true, is_listed: false, show_values: false }];
+  {
+    const { context, page, errors } = await load();
+    check("with a live page, it offers to share them",
+      (await page.locator("#nudgeAction").textContent()).trim(), "Share all 8");
+    check("and says what is never shared",
+      (await page.locator("#nudgeText").textContent()).includes("never shared"), true);
+    await page.click("#nudgeAction");
+    await page.waitForTimeout(900);
+    check("one click shares the collection",
+      backend.cards.every((c) => c.visibility === "public"), true);
+    check("in one request rather than one per card", backend.patches.length, 1);
+    check("and the notice goes once there is nothing to say",
+      await page.locator("#shareNudge").isVisible(), false);
+    check("no errors sharing from the notice", errors, []);
+    await context.close();
+  }
+
+  // Already sharing, so there is nothing to point out.
+  backend.cards = mine(8, true);
+  {
+    const { context, page } = await load();
+    check("no nudge once cards are shared",
+      await page.locator("#shareNudge").isVisible(), false);
+    await context.close();
+  }
+
+  // Waving it away has to stick, or it becomes nagging.
+  backend.cards = mine(8, false);
+  {
+    const { context, page, errors } = await load();
+    check("the notice can be waved away", await page.locator("#shareNudge").isVisible(), true);
+    await page.click("#nudgeDismiss");
+    check("which hides it", await page.locator("#shareNudge").isVisible(), false);
+    await page.reload();
+    await page.waitForTimeout(900);
+    check("and it stays gone", await page.locator("#shareNudge").isVisible(), false);
+    check("still without having shared anything",
+      backend.cards.filter((c) => c.visibility === "public").length, 0);
+    check("no errors dismissing", errors, []);
+    await context.close();
+  }
+
+  backend.cards = []; backend.profiles = []; backend.patches = [];
+}
+
 // --- The feed -------------------------------------------------------------------
 // One column, newest first. Three sources merge into it -- collectors you
 // follow, cards you are hunting, players and teams you watch -- because three
