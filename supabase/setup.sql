@@ -110,26 +110,31 @@ for each row execute function public.touch_updated_at();
 
 alter table public.cards enable row level security;
 
+-- auth.uid() is wrapped in a scalar sub-select throughout. Called bare, Postgres
+-- treats it as volatile and re-runs it for every row the policy examines; as an
+-- uncorrelated sub-query it is evaluated once and the result reused. Same value,
+-- same rule, materially less work on a collection of any size. This is what
+-- Supabase's "Auth RLS Initialization Plan" warning asks for.
 drop policy if exists "Collectors can read their cards" on public.cards;
 create policy "Collectors can read their cards"
 on public.cards for select
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can add their cards" on public.cards;
 create policy "Collectors can add their cards"
 on public.cards for insert
-with check (auth.uid() = user_id);
+with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can update their cards" on public.cards;
 create policy "Collectors can update their cards"
 on public.cards for update
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+using ((select auth.uid()) = user_id)
+with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can delete their cards" on public.cards;
 create policy "Collectors can delete their cards"
 on public.cards for delete
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 -- Deliberately not called "profiles": Supabase's own user-management quickstart
 -- creates a public.profiles table keyed on id, and "create table if not exists"
@@ -173,7 +178,7 @@ alter table public.collector_profiles enable row level security;
 drop policy if exists "Collectors can read their own profile" on public.collector_profiles;
 create policy "Collectors can read their own profile"
 on public.collector_profiles for select
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 -- Only the listed ones, and only ever for reading. is_listed rather than
 -- is_public on purpose: this table is what the collector directory reads, so a
@@ -188,18 +193,18 @@ using (is_public and is_listed);
 drop policy if exists "Collectors can create their profile" on public.collector_profiles;
 create policy "Collectors can create their profile"
 on public.collector_profiles for insert
-with check (auth.uid() = user_id);
+with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can update their profile" on public.collector_profiles;
 create policy "Collectors can update their profile"
 on public.collector_profiles for update
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+using ((select auth.uid()) = user_id)
+with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can delete their profile" on public.collector_profiles;
 create policy "Collectors can delete their profile"
 on public.collector_profiles for delete
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 -- The public read surface. This view is the security boundary, not the cards
 -- table: it runs as its owner, so the WHERE clause here is what decides who can
@@ -280,12 +285,12 @@ alter table public.scan_events enable row level security;
 drop policy if exists "Collectors can read their scan history" on public.scan_events;
 create policy "Collectors can read their scan history"
 on public.scan_events for select
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can record their scans" on public.scan_events;
 create policy "Collectors can record their scans"
 on public.scan_events for insert
-with check (auth.uid() = user_id);
+with check ((select auth.uid()) = user_id);
 
 -- Collection value over time. Kept server-side so the growth chart follows a
 -- collector between devices instead of restarting on each one.
@@ -304,19 +309,19 @@ alter table public.collection_snapshots enable row level security;
 drop policy if exists "Collectors can read their value history" on public.collection_snapshots;
 create policy "Collectors can read their value history"
 on public.collection_snapshots for select
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can record their value history" on public.collection_snapshots;
 create policy "Collectors can record their value history"
 on public.collection_snapshots for insert
-with check (auth.uid() = user_id);
+with check ((select auth.uid()) = user_id);
 
 -- Unlike scan_events, deleting is allowed here: this is the collector's own
 -- history with no metering role, so pruning it is theirs to do.
 drop policy if exists "Collectors can clear their value history" on public.collection_snapshots;
 create policy "Collectors can clear their value history"
 on public.collection_snapshots for delete
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 -- Client error log. Surfaces what is actually failing in real use instead of
 -- waiting for someone to mention it. Deliberately holds no card data: only the
@@ -341,12 +346,12 @@ alter table public.error_events enable row level security;
 drop policy if exists "Collectors can record their errors" on public.error_events;
 create policy "Collectors can record their errors"
 on public.error_events for insert
-with check (auth.uid() = user_id);
+with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can read their errors" on public.error_events;
 create policy "Collectors can read their errors"
 on public.error_events for select
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 -- ---------------------------------------------------------------------------
 -- Wantlists and watchlists.
@@ -389,17 +394,17 @@ alter table public.collector_interests enable row level security;
 drop policy if exists "Collectors can read their interests" on public.collector_interests;
 create policy "Collectors can read their interests"
 on public.collector_interests for select
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can add their interests" on public.collector_interests;
 create policy "Collectors can add their interests"
 on public.collector_interests for insert
-with check (auth.uid() = user_id);
+with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Collectors can remove their interests" on public.collector_interests;
 create policy "Collectors can remove their interests"
 on public.collector_interests for delete
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 -- Deliberately no policy granting anybody else a read, and no grant to anon.
 
@@ -429,8 +434,8 @@ alter table public.collector_interests add constraint collector_interests_has_te
 -- only person allowed to see somebody's followers is that person, so the read
 -- policy matches on either side of the row and nothing else:
 --
---   * follower_id = auth.uid()  -- the list of people I follow, which I wrote
---   * followed_id = auth.uid()  -- the list of people following me, which is
+--   * follower_id = (select auth.uid())  -- the list of people I follow, which I wrote
+--   * followed_id = (select auth.uid())  -- the list of people following me, which is
 --                                  mine to see and nobody else's
 --
 -- That means follower counts are not public either. A count is a weaker leak
@@ -460,12 +465,12 @@ alter table public.collector_follows enable row level security;
 drop policy if exists "Collectors can read their own follows" on public.collector_follows;
 create policy "Collectors can read their own follows"
 on public.collector_follows for select
-using (auth.uid() = follower_id or auth.uid() = followed_id);
+using ((select auth.uid()) = follower_id or (select auth.uid()) = followed_id);
 
 drop policy if exists "Collectors can follow" on public.collector_follows;
 create policy "Collectors can follow"
 on public.collector_follows for insert
-with check (auth.uid() = follower_id);
+with check ((select auth.uid()) = follower_id);
 
 -- Only the follower can undo a follow. There is deliberately no update policy:
 -- a follow has nothing to change, and an editable one could be repointed at
@@ -473,7 +478,7 @@ with check (auth.uid() = follower_id);
 drop policy if exists "Collectors can unfollow" on public.collector_follows;
 create policy "Collectors can unfollow"
 on public.collector_follows for delete
-using (auth.uid() = follower_id);
+using ((select auth.uid()) = follower_id);
 
 do $$ begin
   if exists (select 1 from pg_roles where rolname = 'authenticated') then
@@ -540,17 +545,17 @@ alter table public.card_likes enable row level security;
 drop policy if exists "Collectors can read likes they are part of" on public.card_likes;
 create policy "Collectors can read likes they are part of"
 on public.card_likes for select
-using (auth.uid() = user_id or public.owns_card(card_id));
+using ((select auth.uid()) = user_id or public.owns_card(card_id));
 
 drop policy if exists "Collectors can like shared cards" on public.card_likes;
 create policy "Collectors can like shared cards"
 on public.card_likes for insert
-with check (auth.uid() = user_id and public.is_public_card(card_id));
+with check ((select auth.uid()) = user_id and public.is_public_card(card_id));
 
 drop policy if exists "Collectors can unlike" on public.card_likes;
 create policy "Collectors can unlike"
 on public.card_likes for delete
-using (auth.uid() = user_id);
+using ((select auth.uid()) = user_id);
 
 -- The public half: a number, with no way to turn it back into names, and only
 -- for cards that are actually shared.
@@ -581,12 +586,12 @@ alter table public.card_comments enable row level security;
 drop policy if exists "Anyone can read comments on shared cards" on public.card_comments;
 create policy "Anyone can read comments on shared cards"
 on public.card_comments for select
-using (public.is_public_card(card_id) or auth.uid() = user_id or public.owns_card(card_id));
+using (public.is_public_card(card_id) or (select auth.uid()) = user_id or public.owns_card(card_id));
 
 drop policy if exists "Collectors can comment on shared cards" on public.card_comments;
 create policy "Collectors can comment on shared cards"
 on public.card_comments for insert
-with check (auth.uid() = user_id and public.is_public_card(card_id));
+with check ((select auth.uid()) = user_id and public.is_public_card(card_id));
 
 -- Either end can remove a comment: the person who wrote it, and the collector
 -- whose card it is sitting on. Somebody who gets a nasty comment should not
@@ -594,7 +599,7 @@ with check (auth.uid() = user_id and public.is_public_card(card_id));
 drop policy if exists "Comments can be removed by either end" on public.card_comments;
 create policy "Comments can be removed by either end"
 on public.card_comments for delete
-using (auth.uid() = user_id or public.owns_card(card_id));
+using ((select auth.uid()) = user_id or public.owns_card(card_id));
 
 -- Deliberately no update policy. A comment that can be rewritten after somebody
 -- has replied to it is a comment nobody can rely on.
@@ -676,7 +681,7 @@ on public.reports for insert
 with check (
   -- A signed-in reporter may only file as themselves; an anonymous one files
   -- as nobody. Neither can put somebody else's name to a report.
-  reporter_user_id is null or reporter_user_id = auth.uid()
+  reporter_user_id is null or reporter_user_id = (select auth.uid())
 );
 
 -- Deliberately no select, update or delete policy. Without one, nobody reads
@@ -706,7 +711,7 @@ end $$;
 -- Deleting a user is normally an admin-API call needing the service-role key,
 -- and that key must never go near this app -- it bypasses every rule in this
 -- file. A security-definer function avoids it entirely. This one takes no
--- arguments and reads auth.uid() itself, so a caller cannot name somebody else
+-- arguments and reads (select auth.uid()) itself, so a caller cannot name somebody else
 -- to delete: the only account reachable through it is the caller's own.
 -- ---------------------------------------------------------------------------
 create or replace function public.delete_own_account()
@@ -794,7 +799,7 @@ create policy "Collectors can read their card photos"
 on storage.objects for select
 using (
   bucket_id = 'card-photos'
-  and (storage.foldername(name))[1] = auth.uid()::text
+  and (storage.foldername(name))[1] = (select auth.uid())::text
 );
 
 drop policy if exists "Collectors can upload their card photos" on storage.objects;
@@ -802,7 +807,7 @@ create policy "Collectors can upload their card photos"
 on storage.objects for insert
 with check (
   bucket_id = 'card-photos'
-  and (storage.foldername(name))[1] = auth.uid()::text
+  and (storage.foldername(name))[1] = (select auth.uid())::text
 );
 
 drop policy if exists "Collectors can update their card photos" on storage.objects;
@@ -810,11 +815,11 @@ create policy "Collectors can update their card photos"
 on storage.objects for update
 using (
   bucket_id = 'card-photos'
-  and (storage.foldername(name))[1] = auth.uid()::text
+  and (storage.foldername(name))[1] = (select auth.uid())::text
 )
 with check (
   bucket_id = 'card-photos'
-  and (storage.foldername(name))[1] = auth.uid()::text
+  and (storage.foldername(name))[1] = (select auth.uid())::text
 );
 
 drop policy if exists "Collectors can delete their card photos" on storage.objects;
@@ -822,7 +827,7 @@ create policy "Collectors can delete their card photos"
 on storage.objects for delete
 using (
   bucket_id = 'card-photos'
-  and (storage.foldername(name))[1] = auth.uid()::text
+  and (storage.foldername(name))[1] = (select auth.uid())::text
 );
 
 -- ---------------------------------------------------------------------------

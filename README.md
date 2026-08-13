@@ -626,6 +626,25 @@ So the lint is accurate about what the view *is*, and wrong about it being a
 problem here. Leave it. If you ever silence it, silence it with a comment
 pointing at this section.
 
+## The other lints
+
+**Auth RLS Initialization Plan** (warning, on several tables) is a performance
+note, not a security one, and it is worth acting on. Called bare inside a policy,
+`auth.uid()` is treated as volatile and re-run for every row the policy examines.
+Wrapped in a scalar sub-select — `(select auth.uid())` — it is evaluated once and
+the result reused. Identical value, identical rule, materially less work as a
+collection grows. Every policy here is written that way; the policy suite passes
+unchanged, which is the proof that only the cost moved.
+
+**`public.profiles` is not ours.** If the linter names that table, it came from
+Supabase's own user-management quickstart, not from `setup.sql`. This schema
+deliberately uses `collector_profiles` precisely because that name was already
+taken — `create table if not exists` would have silently skipped creation and
+then failed on the first policy referencing a column that table does not have.
+The policy sweep leaves it alone on purpose: it only manages tables it created.
+If nothing in your project writes to `public.profiles`, it is safe to drop, and
+dropping it will take its lint warnings with it. Check before you do.
+
 ## Security notes
 
 - Do not put a Supabase service-role key in this app.
