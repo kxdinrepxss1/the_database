@@ -584,6 +584,67 @@ npx wrangler deploy
 Wrangler will create a public `workers.dev` address. A custom domain can be
 connected later from the Cloudflare dashboard.
 
+## The "Security Definer View" lint
+
+Supabase's database linter flags `public_cards`, `card_like_counts` and
+`card_comment_feed` as **Security Definer View**, at CRITICAL. That is expected.
+It is not a finding about this schema; it is the linter noticing a pattern that
+*can* be misused, and here it is the mechanism the whole sharing model rests on.
+
+A signed-out visitor has no grant on `cards` at all, and must not have one. The
+view runs as its owner so it can read the table on their behalf and hand back
+only what is safe. Flip it to `security_invoker` — what the lint nudges toward —
+and the visitor is refused outright:
+
+```
+-- as it is today
+set role anon;
+select count(*) from public.public_cards;   -- 1
+
+-- with security_invoker = true
+set role anon;
+select count(*) from public.public_cards;   -- ERROR: permission denied for table cards
+```
+
+Every public page would go blank. The obvious next move — add an RLS policy on
+`cards` letting anybody read rows where `visibility = 'public'` — is the
+dangerous one, because **row-level security cannot hide a column**. Anyone could
+then query `cards` directly and read `storage_container`, `purchase_price` and
+`notes` off a shared card. That is the exact shape of the leak this project has
+already had once, and the reason those columns live behind a view with a fixed
+column list rather than behind a policy.
+
+What actually keeps the view safe is checked rather than assumed, on every run:
+
+- its own `where` clause requires `visibility = 'public'` and `is_public`
+- its column list omits `user_id`, all three storage fields, purchase price,
+  purchase date and notes
+- `setup.sql` fails if any of those columns ever appear in it
+- the policy suite has an anonymous visitor try to read them and fail
+
+So the lint is accurate about what the view *is*, and wrong about it being a
+problem here. Leave it. If you ever silence it, silence it with a comment
+pointing at this section.
+
+## The other lints
+
+**Auth RLS Initialization Plan** (warning, on several tables) is a performance
+note, not a security one, and it is worth acting on. Called bare inside a policy,
+`auth.uid()` is treated as volatile and re-run for every row the policy examines.
+Wrapped in a scalar sub-select — `(select auth.uid())` — it is evaluated once and
+the result reused. Identical value, identical rule, materially less work as a
+collection grows. Every policy here is written that way; the policy suite passes
+unchanged, which is the proof that only the cost moved.
+
+**`public.profiles` is not ours.** If the linter names that table, it came from
+Supabase's own user-management quickstart, not from `setup.sql`. This schema
+deliberately uses `collector_profiles` precisely because that name was already
+taken — `create table if not exists` would have silently skipped creation and
+then failed on the first policy referencing a column that table does not have.
+The policy sweep leaves it alone on purpose: it only manages tables it created.
+If nothing in your project writes to `public.profiles`, it is safe to drop, and
+dropping it will take its lint warnings with it. Check before you do.
+
 ## Security notes
 
 - Do not put a Supabase service-role key in this app.
