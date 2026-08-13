@@ -584,6 +584,48 @@ npx wrangler deploy
 Wrangler will create a public `workers.dev` address. A custom domain can be
 connected later from the Cloudflare dashboard.
 
+## The "Security Definer View" lint
+
+Supabase's database linter flags `public_cards`, `card_like_counts` and
+`card_comment_feed` as **Security Definer View**, at CRITICAL. That is expected.
+It is not a finding about this schema; it is the linter noticing a pattern that
+*can* be misused, and here it is the mechanism the whole sharing model rests on.
+
+A signed-out visitor has no grant on `cards` at all, and must not have one. The
+view runs as its owner so it can read the table on their behalf and hand back
+only what is safe. Flip it to `security_invoker` — what the lint nudges toward —
+and the visitor is refused outright:
+
+```
+-- as it is today
+set role anon;
+select count(*) from public.public_cards;   -- 1
+
+-- with security_invoker = true
+set role anon;
+select count(*) from public.public_cards;   -- ERROR: permission denied for table cards
+```
+
+Every public page would go blank. The obvious next move — add an RLS policy on
+`cards` letting anybody read rows where `visibility = 'public'` — is the
+dangerous one, because **row-level security cannot hide a column**. Anyone could
+then query `cards` directly and read `storage_container`, `purchase_price` and
+`notes` off a shared card. That is the exact shape of the leak this project has
+already had once, and the reason those columns live behind a view with a fixed
+column list rather than behind a policy.
+
+What actually keeps the view safe is checked rather than assumed, on every run:
+
+- its own `where` clause requires `visibility = 'public'` and `is_public`
+- its column list omits `user_id`, all three storage fields, purchase price,
+  purchase date and notes
+- `setup.sql` fails if any of those columns ever appear in it
+- the policy suite has an anonymous visitor try to read them and fail
+
+So the lint is accurate about what the view *is*, and wrong about it being a
+problem here. Leave it. If you ever silence it, silence it with a comment
+pointing at this section.
+
 ## Security notes
 
 - Do not put a Supabase service-role key in this app.
